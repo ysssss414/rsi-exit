@@ -9,6 +9,7 @@ import pandas as pd
 from rsi_exit.config import RsiExitConfig
 from rsi_exit.models import SignalType
 from rsi_exit.pipeline import AnalysisResult
+from rsi_exit.warning_events import WARNING_EVENT_COLUMNS
 
 
 FORMAL_DIVERGENCE_VALUES = {
@@ -41,6 +42,11 @@ def write_outputs(
         "state_log.csv": result.state_log,
         "cycle_log.csv": result.cycle_log,
         "rsi_audit.csv": result.rsi_audit,
+        "warning_events.csv": (
+            result.warning_events
+            if result.warning_events.columns.tolist()
+            else pd.DataFrame(columns=WARNING_EVENT_COLUMNS)
+        ),
     }
     for filename, frame in frames.items():
         _csv_ready(frame).to_csv(output_dir / filename, index=False, encoding=encoding)
