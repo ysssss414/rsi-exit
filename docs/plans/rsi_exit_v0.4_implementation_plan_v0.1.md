@@ -8,6 +8,8 @@
   `932D0220AAB4A3BDC6BB0EA3A77630A994702E821E1FF72C7A4F3E25B6D1BF52` 为不可变基线。
 - warning 第一阶段只消费 `DIVERGENCE_FORMING`，不改变 v0.3 检测条件。
 - warning 代码不得写入 divergence tracker、risk cycle、position queue 或 state machine。
+- 现有 `AnalysisResult.warnings: list[str]` 固定表示系统运行、数据质量和配置类警告；
+  v0.4 生命周期对象统一命名为 `warning_events`，正式输出为 `warning_events.csv`。
 - 每个 Phase 单独提交、单独审查；前一 Phase 验收通过后才能进入下一 Phase。
 - Phase 5 必须再次获得明确业务批准；Phase 6 不得移动 `v0.3.0` tag 或覆盖冻结 ZIP。
 - 新测试行情只能是合成/脱敏 fixture；私有行情不提交。
@@ -21,26 +23,33 @@
 
 ### 预计修改文件
 
-- `rsi_exit/models.py`：新增 warning enum/dataclass，不改既有模型字段语义；
-- `rsi_exit/warnings.py`（新增）：纯函数建立身份、验证硬条件和生成审计事件；
+- `rsi_exit/models.py`：新增 warning enum/dataclass；保留 `warnings: list[str]`，新增
+  `warning_events: pd.DataFrame`，不改原字段内容和语义；
+- `rsi_exit/warning_events.py`（新增）：消费既有 forming fact、验证 source contract、建立
+  含 `symbol` 的确定性身份并生成审计事件；不得重算背离条件；
 - `rsi_exit/pipeline.py`：以只读方式将既有 forming 结果传入 warning 纯函数；
-- `rsi_exit/reporting.py`：新增独立 `warnings.csv`，不混入正式 `signals.csv`；
+- `rsi_exit/reporting.py`：新增独立 `warning_events.csv`，不混入正式 `signals.csv`；
 - `tests/test_v04_warning_events.py`（新增）：事件条件、身份、日期和隔离测试。
 
 ### 新增测试
 
-- 双 RSI 阈值 `-0.999/-1.000` 边界；
-- `STRICT_NEW_HIGH` 与 `FORMAL_NEAR_HIGH_RETEST` 正例；
+- `DIVERGENCE_FORMING` 的 type/status 与两个批准 price relation 触发正例；
+- RSI delta、structural/position eligibility、pending action 的 source contract 断言；
+- source contract 损坏时明确失败、不建立事件、不静默重算；
 - intraday、non-comparable、structural-without-divergence 负例；
 - forming v1/v2/v3 的一个 warning id 和唯一 event id；
+- 两个 symbol 使用相同 forming/chain id 时身份不碰撞；
 - 同版本重放无操作；
 - `position_effect=NONE`、recommended cap 为 null；
+- 事件只含 `available_date`，不含 `earliest_action_date` 或 `effective_date`；
+- `AnalysisResult.warnings` 内容、顺序、类型和语义保持不变；
 - warning 开关前后 v0.3 正式输出逐字段一致。
 
 ### 验收标准
 
 - 只产生 `OPENED/REFRESHED`；每个事件可由源 forming 行复算；
-- 日期满足因果不等式；prefix/full 前缀一致；
+- `observation_date = decision_date = available_date`；prefix/full 在相同起点、配置、symbol
+  且仅改变截止日期时前缀一致；
 - 未调用 `divergence_position_rule`、`SignalCapQueue` 或 state-machine API；
 - v0.3 全量测试和冻结回归不变。
 
@@ -58,7 +67,7 @@
 
 ### 预计修改文件
 
-- `rsi_exit/warnings.py`：新增独立 `WarningTracker`，仅拥有 warning 状态；
+- `rsi_exit/warning_events.py`：新增独立 `WarningTracker`，仅拥有 warning event 状态；
 - `rsi_exit/models.py`：补充生命周期原因码和正式信号引用字段；
 - `rsi_exit/pipeline.py`：按固定优先级投递只读 formal/daily facts；
 - `rsi_exit/reporting.py`：输出事件历史和 as-of 当前状态；
@@ -67,8 +76,13 @@
 ### 新增测试
 
 - 延伸、正式升级、无背离确认失效、混合涨跌失效；
-- anchor breakout 与两类 deep reset 解除；
+- anchor breakout 产生 `CLEARED / MOMENTUM_ANCHOR_REBUILT`；
+- 两类 deep reset 产生 `INVALIDATED / DEEP_RSI_RESET_COMPLETED`，不得显示风险解除；
 - 同日多条件优先级；
+- formal matcher 覆盖 last structural id/version、anchor id/version、peak date、chain 和
+  `latest_decision_date`，并验证结果不依赖 `position_eligible`；
+- formal 匹配基数 0/1/>1 分别走其他终止、唯一升级、数据合同错误；
+- `linked_formal_signal_ref` 可从现有正式字段确定性复算，且只写入 `ESCALATED`；
 - 活动 warning 在数据截止日保持 `ACTIVE_AT_CUTOFF`；
 - canonical v1/v2/v3、同版本重放、旧组迟到和终态复活负例；
 - 每个事件日 prefix/full 逐字段比较。
@@ -77,6 +91,7 @@
 
 - 每个活动 warning 在下一个可判定时点只有一个转换；
 - `ESCALATED` 与且仅与匹配正式信号链接，不自行增加正式 count；
+- 不修改 v0.3 models/signals schema，不新增 forming→canonical 字段或 formal signal id；
 - 旧事件不回写，终态不复活；
 - v0.3 tracker/cycle/cap/state 对照完全一致。
 
@@ -94,7 +109,7 @@
 
 ### 预计修改文件
 
-- `rsi_exit/reporting.py`：新增 warning 摘要、原因和证据表；
+- `rsi_exit/reporting.py`：新增 warning event 摘要、原因、证据表和 `warning_events.csv`；
 - `rsi_exit/plotting.py`：使用独立图例和非交易标记；
 - `rsi_exit/cli.py`：仅增加输出路径/摘要信息；
 - `README.md` 与 v0.4 使用说明；
@@ -102,7 +117,7 @@
 
 ### 新增测试
 
-- 同一 warning id 的 refresh 在摘要折叠、审计展开；
+- 同一 warning id 的 refresh 必须在用户摘要折叠，`warning_events.csv` 保留全部事件；
 - 活动、升级、解除、失效的标签互斥；
 - warning 标记不显示正式 divergence 序号或 position cap；
 - CSV 列顺序、空输出、warmup/display-range 和确定性序列化；
@@ -112,6 +127,7 @@
 
 - 用户能区分“预警”“正式背离”“S 状态”和“正式仓位”；
 - 报告显示 as-of date、状态、硬证据和 position effect `NONE`；
+- deep reset 固定显示“预警因 RSI 深度重置终止”，不能显示风险解除或动能恢复；
 - 同一 forming 连续版本不重复弹窗；
 - 输出可确定性重放。
 
@@ -132,7 +148,7 @@
 - `tests/test_v04_warning_scenarios.py`（新增合成/脱敏参数化测试）；
 - `tests/fixtures/` 下经批准的合成或脱敏 fixture；
 - `docs/validation/rsi_exit_v0.4_validation_results_v0.1.md`（新增结果记录）；
-- 必要时仅修正 `rsi_exit/warnings.py` 中已批准的确定性规则。
+- 必要时仅修正 `rsi_exit/warning_events.py` 中已批准的确定性规则。
 
 ### 新增测试
 
@@ -164,12 +180,15 @@
 ### 预计修改文件
 
 - `docs/specs/rsi_exit_v0.4_warning_position_proposal_v0.1.md`（先新增并批准）；
-- 批准后才可能修改 `rsi_exit/warnings.py`、`rsi_exit/reporting.py`；
+- 批准后才可能修改 `rsi_exit/warning_events.py`、`rsi_exit/reporting.py`；
 - 新增 `config/rsi_exit_v04.yaml` 中独立 warning 建议字段；
 - `tests/test_v04_warning_position_advice.py`（新增）。
 
 正式 `position_rules.py`、`SignalCapQueue` 和 `state_machine.py` 默认不修改。若提案要求方案 C，
 必须终止本 Phase，另开版本、规格和审批。
+
+Phase 5 目前未获批准。若未来批准方案 B，必须新增独立字段和独立规格，不能向 Phase 1
+历史 `WarningEvent` 回填交易有效日、`earliest_action_date` 或 `effective_date`。
 
 ### 新增测试
 
