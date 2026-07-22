@@ -11,6 +11,13 @@ from rsi_exit.models import SignalType
 from rsi_exit.pipeline import AnalysisResult
 
 
+FORMAL_DIVERGENCE_VALUES = {
+    SignalType.BEARISH_DIVERGENCE.value,
+    SignalType.NEW_HIGH_BEARISH_DIVERGENCE.value,
+    SignalType.NEAR_HIGH_BEARISH_DIVERGENCE.value,
+}
+
+
 def write_outputs(
     result: AnalysisResult,
     *,
@@ -61,7 +68,8 @@ def build_summary(result: AnalysisResult, config: RsiExitConfig) -> str:
         signals = signals.loc[signals["is_display_range"].astype(bool)]
     peaks = result.peaks
     display_peaks = peaks.loc[peaks["is_display_range"]] if not peaks.empty else peaks
-    divergence = signals.loc[signals["signal_type"] == SignalType.BEARISH_DIVERGENCE.value]
+    divergence = signals.loc[signals["signal_type"].isin(FORMAL_DIVERGENCE_VALUES)]
+    forming = signals.loc[signals["signal_type"] == SignalType.DIVERGENCE_FORMING.value]
     weak = signals.loc[signals["signal_type"] == SignalType.LOWER_HIGH_WEAK_REBOUND.value]
     current = result.daily_features.iloc[-1]
     params = {key: config.values[key] for key in (
@@ -82,7 +90,7 @@ def build_summary(result: AnalysisResult, config: RsiExitConfig) -> str:
         f"- 输入校验和：`{result.metadata['input_checksum_sha256']}`",
         f"- 计算区间已确认候选/规范峰：{len(peaks)} / {len(result.canonical_peaks)}",
         f"- 展示区间候选/独立规范峰：{len(display_peaks)} / {int(display_peaks['is_independent_peak'].sum()) if not display_peaks.empty else 0}",
-        f"- 顶部背离/弱反弹：{len(divergence)} / {len(weak)}",
+        f"- 正式顶部背离/形成中/历史弱反弹：{len(divergence)} / {len(forming)} / {len(weak)}",
         f"- 当前决策状态：{current['decision_base_state']}",
         f"- 当前有效状态：{current['effective_base_state']}",
         f"- 当前RSI：{float(current['rsi']):.4f}" if pd.notna(current["rsi"]) else "- 当前RSI：不可用",
@@ -95,7 +103,7 @@ def build_summary(result: AnalysisResult, config: RsiExitConfig) -> str:
         "- `signals.csv` 保留完整计算区间信号，并以 `is_warmup` / `is_display_range` 标识所属区间；展示首日有效约束的来源同时写入 `daily_features.csv`。",
         "", "## 因果与状态口径", "",
         "- 峰值日在下一真实交易日确认；确认日只生成决策，最早再下一真实交易日生效。",
-        "- 同日先处理峰值关系并保存版本快照；周期重置通过独立 RESET_SIGNAL_DOMAIN 动作使旧 cycle 信号约束失效。",
+        "- 同日先保存不可变正式峰/背离快照；risk cycle 的 RESET_SIGNAL_DOMAIN 与 divergence chain 分离。",
         "- `ALLOW_REENTRY` 是一次资格事件，落回 S0；它不表示自动买入，S5 不再持久化。",
         "", "## 参数", "", "```json", json.dumps(params, ensure_ascii=False, indent=2), "```",
         "", "## 警告", "", *(warning_lines or ["- 无。"]), "",
@@ -219,13 +227,18 @@ def _comparison_metric_rows(
     def signal_count(frame: pd.DataFrame, kind: SignalType) -> int:
         return 0 if frame.empty or "signal_type" not in frame else int((frame["signal_type"] == kind.value).sum())
 
+    def formal_divergence_count(frame: pd.DataFrame) -> int:
+        return 0 if frame.empty or "signal_type" not in frame else int(
+            frame["signal_type"].isin(FORMAL_DIVERGENCE_VALUES).sum()
+        )
+
     old_rsi_key = "rsi" if old_current is not None and "rsi" in old_current else "rsi14"
     rows = ["| 项目 | 旧输出 | 当前输出 |", "|---|---:|---:|"]
     rows.extend([
         f"| {end_date} RSI | {_old_value(old_current, old_rsi_key)} | {float(current['rsi']):.6f} |",
         f"| 展示区间候选峰 | {len(old_peaks)} | {len(display_peaks)} |",
         f"| 展示区间独立/规范峰 | {int(old_peaks['is_independent_peak'].sum()) if 'is_independent_peak' in old_peaks else '—'} | {int(display_peaks['is_independent_peak'].sum()) if not display_peaks.empty else 0} |",
-        f"| 顶部背离 | {signal_count(old_signals, SignalType.BEARISH_DIVERGENCE)} | {signal_count(display_signals, SignalType.BEARISH_DIVERGENCE)} |",
+        f"| 顶部背离 | {formal_divergence_count(old_signals)} | {formal_divergence_count(display_signals)} |",
         f"| 弱反弹 | {signal_count(old_signals, SignalType.LOWER_HIGH_WEAK_REBOUND)} | {signal_count(display_signals, SignalType.LOWER_HIGH_WEAK_REBOUND)} |",
         f"| 期末状态 | {_old_value(old_current, 'base_state')} | {current['decision_base_state']} |",
         f"| 期末仓位上限 | {_old_value(old_current, 'final_position_cap')} | decision={float(current['decision_final_position_cap']):.2f}, effective={float(current['effective_final_position_cap']):.2f} |",

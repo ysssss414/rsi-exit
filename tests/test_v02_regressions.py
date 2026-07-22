@@ -159,7 +159,8 @@ def test_every_signal_identity_is_reconstructable_from_peak_outputs() -> None:
     assert not result.signals.empty
     candidates = result.peaks.set_index("candidate_peak_id", verify_integrity=True)
     canonical_ids = set(result.canonical_peaks["canonical_peak_id"])
-    for _, signal in result.signals.iterrows():
+    formal = result.signals.loc[result.signals["signal_status"] == "FORMAL"]
+    for _, signal in formal.iterrows():
         current = candidates.loc[signal["current_candidate_peak_id"]]
         previous = candidates.loc[signal["previous_candidate_peak_id"]]
         assert signal["current_canonical_peak_id"] in canonical_ids

@@ -14,7 +14,7 @@ from rsi_exit.reporting import write_batch_summary, write_outputs
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="RSI卖点信号识别器 v0.2.1")
+    parser = argparse.ArgumentParser(description="RSI卖点信号识别器 v0.3.0")
     parser.add_argument("--symbol", required=True, help="AmazingData代码，例如 300308.SZ")
     parser.add_argument("--name", default=None, help="可选名称；在线模式默认由代码信息接口确认")
     parser.add_argument("--start", required=True, help="YYYY-MM-DD")
@@ -115,12 +115,12 @@ def _with_overrides(config: RsiExitConfig, args: argparse.Namespace) -> RsiExitC
     values = deepcopy(config.values)
     mappings = (
         ("seed_mode", "rsi", "seed_mode"),
-        ("price_tolerance", "divergence", "price_tolerance_pct"),
-        ("rsi_tolerance", "divergence", "rsi_tolerance"),
+        ("price_tolerance", "divergence", "price_epsilon"),
+        ("rsi_tolerance", "divergence", "divergence_rsi_tolerance"),
         ("min_peak_gap", "peak_detection", "min_peak_gap"),
         ("min_rsi_retrace", "peak_detection", "min_rsi_retrace"),
         ("min_price_retrace", "peak_detection", "min_price_retrace_pct"),
-        ("max_peak_gap", "peak_detection", "max_peak_gap"),
+        ("max_peak_gap", "divergence", "max_structural_peak_gap"),
     )
     for argument, section, key in mappings:
         value = getattr(args, argument)
