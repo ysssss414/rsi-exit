@@ -42,7 +42,11 @@ def test_same_wave_small_peaks_are_merged() -> None:
     assert len(peaks) == 2
     assert bool(peaks.iloc[0]["is_independent_peak"])
     assert not bool(peaks.iloc[1]["is_independent_peak"])
-    assert peaks.iloc[1]["merged_into_peak_id"] == "P0001"
+    assert peaks.iloc[1]["merged_into_peak_id"] == "PK0001"
+    assert peaks.iloc[0]["candidate_peak_id"] == "CP0001"
+    assert peaks.iloc[1]["candidate_peak_id"] == "CP0002"
+    assert peaks.iloc[1]["canonical_peak_id"] == "PK0001"
+    assert peaks.iloc[1]["canonical_version"] == 2
     assert bool(peaks.iloc[1]["canonical_updated"])
 
 
@@ -71,4 +75,3 @@ def test_no_retrace_means_merge_even_when_gap_is_large_enough() -> None:
     )
     assert len(peaks) == 2
     assert not bool(peaks.iloc[1]["is_independent_peak"])
-

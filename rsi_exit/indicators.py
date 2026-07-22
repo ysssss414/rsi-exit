@@ -54,6 +54,18 @@ def calculate_rsi_cn(
     seed_mode: str = "first",
 ) -> pd.Series:
     """Calculate RSI14 using the domestic LC/SMA formula."""
+    audit = calculate_rsi_audit(close, period=period, seed_mode=seed_mode)
+    rsi = audit["rsi"]
+    rsi.name = f"rsi{period}"
+    return rsi
+
+
+def calculate_rsi_audit(
+    close: pd.Series,
+    period: int = 14,
+    seed_mode: str = "first",
+) -> pd.DataFrame:
+    """Return every numeric component used by the domestic RSI recurrence."""
     numeric = pd.to_numeric(close, errors="coerce").astype("float64")
     delta = numeric.diff()
     gain = delta.clip(lower=0)
@@ -61,9 +73,18 @@ def calculate_rsi_cn(
     smoothed_gain = cn_sma(gain, n=period, m=1, seed_mode=seed_mode)
     smoothed_absolute = cn_sma(absolute, n=period, m=1, seed_mode=seed_mode)
     denominator = smoothed_absolute.replace(0.0, np.nan)
-    rsi = smoothed_gain.div(denominator).mul(100.0)
-    rsi.name = f"rsi{period}"
-    return rsi
+    return pd.DataFrame(
+        {
+            "adjusted_close": numeric,
+            "delta": delta,
+            "gain": gain,
+            "absolute_delta": absolute,
+            "smoothed_gain": smoothed_gain,
+            "smoothed_absolute": smoothed_absolute,
+            "rsi": smoothed_gain.div(denominator).mul(100.0),
+        },
+        index=numeric.index,
+    )
 
 
 def rsi_zone(value: float, *, strong: float = 70, life: float = 60,

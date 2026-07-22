@@ -8,7 +8,7 @@ from typing import Any
 
 
 class ConfigError(ValueError):
-    """Raised when v0.1 configuration is invalid."""
+    """Raised when RSI-exit configuration is invalid."""
 
 
 @dataclass(frozen=True)
@@ -24,11 +24,10 @@ class RsiExitConfig:
 
 
 def default_config_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "config" / "rsi_exit_v01.yaml"
+    return Path(__file__).resolve().parents[1] / "config" / "rsi_exit_v02.yaml"
 
 
 def load_config(path: str | Path | None = None) -> RsiExitConfig:
-    """Load JSON-compatible YAML, matching the existing project's convention."""
     source = Path(path or default_config_path()).resolve()
     if not source.exists():
         raise ConfigError(f"配置文件不存在: {source}")
@@ -52,40 +51,40 @@ def _number(section: dict[str, Any], key: str, *, minimum: float | None = None) 
     return number
 
 
+def _integer(section: dict[str, Any], key: str, *, minimum: int = 0) -> int:
+    value = _number(section, key, minimum=minimum)
+    if int(value) != value:
+        raise ConfigError(f"配置项 {key} 必须是整数")
+    return int(value)
+
+
 def _validate(raw: dict[str, Any]) -> None:
     required = (
-        "rsi",
-        "levels",
-        "peak_detection",
-        "divergence",
-        "position_caps",
-        "data_source",
-        "output",
+        "rsi", "levels", "data", "peak_detection", "divergence",
+        "position_caps", "chart", "data_source", "output",
     )
     for name in required:
         if not isinstance(raw.get(name), dict):
             raise ConfigError(f"缺少配置节: {name}")
 
-    rsi = raw["rsi"]
-    period = _number(rsi, "period", minimum=1)
-    if int(period) != period:
-        raise ConfigError("rsi.period 必须是整数")
-    if rsi.get("seed_mode") not in {"first", "mean"}:
+    _integer(raw["rsi"], "period", minimum=1)
+    if raw["rsi"].get("seed_mode") not in {"first", "mean"}:
         raise ConfigError("rsi.seed_mode 必须是 first 或 mean")
 
     levels = raw["levels"]
-    strong = _number(levels, "strong")
-    life = _number(levels, "life")
-    neutral = _number(levels, "neutral")
-    weak = _number(levels, "weak")
+    strong, life = _number(levels, "strong"), _number(levels, "life")
+    neutral, weak = _number(levels, "neutral"), _number(levels, "weak")
     if not strong > life > neutral > weak:
         raise ConfigError("RSI levels 必须满足 strong > life > neutral > weak")
 
+    _integer(raw["data"], "warmup_trading_days", minimum=120)
+    _integer(raw["data"], "ma_period", minimum=1)
+
     peak = raw["peak_detection"]
     for key in ("lookback", "min_peak_gap", "max_peak_gap"):
-        value = _number(peak, key, minimum=1)
-        if int(value) != value:
-            raise ConfigError(f"peak_detection.{key} 必须是整数")
+        _integer(peak, key, minimum=1)
+    if not isinstance(peak.get("require_recent_window_max"), bool):
+        raise ConfigError("peak_detection.require_recent_window_max 必须是布尔值")
     _number(peak, "min_rsi_retrace", minimum=0)
     _number(peak, "min_price_retrace_pct", minimum=0)
 
@@ -95,8 +94,27 @@ def _validate(raw: dict[str, Any]) -> None:
     _number(divergence, "reset_rsi_level")
 
     caps = raw["position_caps"]
-    for key, value in caps.items():
+    expected_caps = {
+        "uninitialized", "base_s0", "base_s1", "base_s2", "base_s3", "base_s4",
+        "first_divergence", "second_divergence", "third_divergence",
+        "divergence_below_life", "weak_rebound_above_life", "weak_rebound_below_life",
+    }
+    if set(caps) != expected_caps:
+        missing = expected_caps - set(caps)
+        extra = set(caps) - expected_caps
+        raise ConfigError(f"position_caps 字段不完整，缺少={sorted(missing)} 多余={sorted(extra)}")
+    for key in expected_caps:
         number = _number(caps, key, minimum=0)
         if number > 1:
             raise ConfigError(f"position_caps.{key} 必须位于 [0, 1]")
 
+    chart = raw["chart"]
+    lines = chart.get("rsi_lines")
+    if not isinstance(lines, list) or not lines or any(
+        isinstance(value, bool) or not isinstance(value, (int, float)) for value in lines
+    ):
+        raise ConfigError("chart.rsi_lines 必须是非空数值数组")
+
+    source = raw["data_source"]
+    if source.get("provider") != "AmazingData":
+        raise ConfigError("data_source.provider 必须为 AmazingData")

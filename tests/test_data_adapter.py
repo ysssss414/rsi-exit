@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
+from pathlib import Path
 
 from rsi_exit.data.amazingdata_adapter import AmazingDataAdapter, DataSourceError
 
@@ -54,3 +55,13 @@ def test_bar_validation_rejects_missing_required_value() -> None:
     raw.loc[0, "amount"] = None
     with pytest.raises(DataSourceError):
         AmazingDataAdapter._validate_bars(raw, "300308.SZ")
+
+
+def test_warmup_start_uses_exact_prior_calendar_rows(monkeypatch) -> None:
+    adapter = AmazingDataAdapter(legacy_provider_root=Path.cwd(), cache_dir=Path.cwd() / "cache")
+    calendar = pd.bdate_range("2025-01-01", periods=150)
+    monkeypatch.setattr(
+        adapter, "get_trade_calendar", lambda: [int(value.strftime("%Y%m%d")) for value in calendar]
+    )
+    display_start = calendar[130].strftime("%Y-%m-%d")
+    assert adapter.get_calculation_start_date(display_start, 120) == calendar[10].strftime("%Y-%m-%d")
