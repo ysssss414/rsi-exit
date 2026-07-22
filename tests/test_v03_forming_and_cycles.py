@@ -57,6 +57,26 @@ def tracker_peak(number: int, index: int, high: float, close: float, rsi: float)
     )
 
 
+def canonical_update_peak(
+    number: int,
+    index: int,
+    canonical_id: str,
+    version: int,
+    high: float,
+    close: float,
+    rsi: float,
+) -> Peak:
+    return replace(
+        tracker_peak(number, index, high, close, rsi),
+        is_independent_peak=False,
+        merged_into_peak_id=canonical_id,
+        canonical_peak_id=canonical_id,
+        representative_candidate_id=f"P{number:04d}",
+        canonical_updated=True,
+        canonical_version=version,
+    )
+
+
 def test_forming_preview_is_non_mutating_and_position_ineligible() -> None:
     tracker = DivergenceTracker()
     tracker.process(tracker_peak(0, 0, 100, 99, 80))
@@ -390,4 +410,110 @@ def test_same_canonical_update_obeys_anchor_reset_tolerance(
         assert tracker.anchor.representative_candidate_id == "P0000"
         assert tracker.last_structural_peak.representative_candidate_id == "P0000"
         assert tracker.divergence_chain_id == chain_id
+    assert tracker.latest_confirmed_canonical.canonical_peak_id == "P0000"
+    assert tracker.latest_confirmed_canonical.canonical_version == 2
+    assert tracker.latest_confirmed_canonical.peak_rsi == 80.0 + increase
     assert tracker.divergence_count == 0
+
+
+def test_latest_nonstructural_canonical_can_activate_on_later_version() -> None:
+    tracker = DivergenceTracker()
+    tracker.process(tracker_peak(0, 0, 100, 99, 84.396377))
+    chain_id = tracker.divergence_chain_id
+
+    nonstructural = tracker.process(tracker_peak(1, 4, 97, 96, 68.393474))
+    assert nonstructural.signal_type == SignalType.NON_COMPARABLE_PEAK
+    assert tracker.anchor.canonical_peak_id == "P0000"
+    assert tracker.last_structural_peak.canonical_peak_id == "P0000"
+    assert tracker.latest_confirmed_canonical.canonical_peak_id == "P0001"
+    assert tracker.latest_confirmed_canonical.canonical_version == 1
+
+    update = canonical_update_peak(
+        2, 8, "P0001", 2, 101, 100, 70.393474
+    )
+    activated = tracker.process(update)
+    assert activated.reset_reason == "ANCHOR_RSI_BREAKOUT"
+    assert activated.same_canonical_anchor_breakout
+    assert activated.signal_type == SignalType.STRUCTURAL_PEAK_WITHOUT_DIVERGENCE
+    assert not activated.position_eligible
+    assert tracker.anchor.canonical_peak_id == "P0001"
+    assert tracker.anchor.canonical_version == 2
+    assert tracker.last_structural_peak.canonical_peak_id == "P0001"
+    assert tracker.latest_confirmed_canonical.canonical_peak_id == "P0001"
+    assert tracker.latest_confirmed_canonical.canonical_version == 2
+    assert tracker.divergence_count == 0
+    assert tracker.divergence_chain_id != chain_id
+
+
+def test_stale_canonical_update_cannot_reclaim_anchor_after_newer_group() -> None:
+    tracker = DivergenceTracker()
+    tracker.process(tracker_peak(0, 0, 100, 99, 80.0))
+    assert tracker.process(
+        canonical_update_peak(1, 2, "P0000", 2, 101, 100, 82.0)
+    ).same_canonical_anchor_breakout
+
+    newer = tracker.process(tracker_peak(2, 4, 98, 97, 70.0))
+    assert newer.signal_type == SignalType.NON_COMPARABLE_PEAK
+    assert tracker.latest_confirmed_canonical.canonical_peak_id == "P0002"
+    before = (
+        tracker.anchor,
+        tracker.last_structural_peak,
+        tracker.latest_confirmed_canonical,
+        tracker.divergence_chain_id,
+        tracker.divergence_count,
+    )
+
+    stale = canonical_update_peak(3, 6, "P0000", 3, 102, 101, 84.0)
+    assert tracker.process(stale, risk_cycle_id="RISK0007") is None
+    assert before == (
+        tracker.anchor,
+        tracker.last_structural_peak,
+        tracker.latest_confirmed_canonical,
+        tracker.divergence_chain_id,
+        tracker.divergence_count,
+    )
+
+
+def test_nonstructural_canonical_only_advances_latest_confirmed_lineage() -> None:
+    tracker = DivergenceTracker()
+    tracker.process(tracker_peak(0, 0, 100, 99, 80.0))
+    before = (
+        tracker.anchor,
+        tracker.last_structural_peak,
+        tracker.divergence_chain_id,
+        tracker.divergence_count,
+    )
+
+    result = tracker.process(tracker_peak(1, 4, 97, 96, 75.0))
+    assert result.signal_type == SignalType.NON_COMPARABLE_PEAK
+    assert tracker.latest_confirmed_canonical.canonical_peak_id == "P0001"
+    assert tracker.latest_confirmed_canonical.canonical_version == 1
+    assert before == (
+        tracker.anchor,
+        tracker.last_structural_peak,
+        tracker.divergence_chain_id,
+        tracker.divergence_count,
+    )
+
+
+def test_same_canonical_version_replay_does_not_advance_latest_or_reset_chain() -> None:
+    tracker = DivergenceTracker()
+    tracker.process(tracker_peak(0, 0, 100, 99, 80.0))
+    update = canonical_update_peak(1, 2, "P0000", 2, 101, 100, 82.0)
+    assert tracker.process(update).same_canonical_anchor_breakout
+    latest = tracker.latest_confirmed_canonical
+    before = (
+        tracker.anchor,
+        tracker.last_structural_peak,
+        tracker.divergence_chain_id,
+        tracker.divergence_count,
+    )
+
+    assert tracker.process(update) is None
+    assert tracker.latest_confirmed_canonical is latest
+    assert before == (
+        tracker.anchor,
+        tracker.last_structural_peak,
+        tracker.divergence_chain_id,
+        tracker.divergence_count,
+    )

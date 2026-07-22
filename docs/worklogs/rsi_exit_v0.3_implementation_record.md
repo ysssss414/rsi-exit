@@ -94,6 +94,11 @@
 - 唯一例外：新版本因果确认、价格结构合格，并较同组上一正式版本 RSI 至少提高 2.0
   时，输出无仓位资格的 `ANCHOR_RSI_BREAKOUT`，重建 momentum anchor、last structural
   与 divergence chain，count 归零。`same_canonical_anchor_breakout` 显式审计来源。
+- 增加不可变快照 `latest_confirmed_canonical`，独立记录最近完成确认的 canonical lineage。
+  新 canonical 即使为 `NON_COMPARABLE_PEAK` 也推进 latest，但不改变 anchor 或 last
+  structural；同组新版本只有尚未被更新 canonical 分组取代时才可检查上述激活例外。
+- 旧 canonical 的迟到版本在更新分组确认后保持 audit-only；当前 latest 分组未激活的新版本
+  只推进 latest，同版本重放既不重复推进，也不重置 divergence chain。
 - 300308 冻结链保留：PK0008 v1（4/30）快照不回写；PK0008 v2（5/14）新增 anchor
   breakout；5/20 为 `INTRADAY_POTENTIAL_RETEST`；5/28、6/04、6/22 仍为 count 1/2/3。
 - 新增 `rsi_exit.release_check`。普通测试可明确 skip 缺失的私有 ZIP；发布验收缺文件、

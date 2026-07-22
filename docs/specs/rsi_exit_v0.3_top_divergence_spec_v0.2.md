@@ -132,13 +132,22 @@ last structural。
 last structural，count 归零。单日 49、`49/50/49`、40.1、不可比峰、forming 失效、
 普通仓位/风险周期事件均不能重置。
 
-同 canonical 新版本先以同组上一正式版本快照验证版本递增、日期因果和 `+2.0` 闭区间
-边界，再以当前 last structural 验证价格关系必须为 `STRICT_NEW_HIGH` 或
+`latest_confirmed_canonical` 是截至当前因果时点最近完成确认的 canonical 快照，与
+momentum anchor 和 last structural 相互独立。新 canonical 完成确认后，无论价格关系
+是否具备结构资格，都推进该快照；这项推进本身不得改变 anchor、last structural、count、
+仓位、risk cycle 或 S 状态。
+
+同 canonical 新版本只有仍属于 `latest_confirmed_canonical` 所在分组时，才有资格继续
+检查激活条件；更新 canonical 分组一经确认，旧分组的迟到版本只能 audit，不得重新夺回
+anchor。合格更新先以同组上一正式版本快照验证版本递增、日期因果和 `+2.0` 闭区间边界，
+再以当前 last structural 验证价格关系必须为 `STRICT_NEW_HIGH` 或
 `FORMAL_NEAR_HIGH_RETEST`。全部满足时，它可以作为唯一更新例外输出
 `STRUCTURAL_PEAK_WITHOUT_DIVERGENCE` 和 `ANCHOR_RSI_BREAKOUT`：旧链关闭，当前版本
 成为新 momentum anchor 与 last structural，count 归零且新建 chain；该行不具仓位
 资格，也不触发一背、二背、三背或 S 状态。`+1.999` 只能审计，`+2.000` 才触发；
-同一 `(canonical_peak_id, canonical_version)` 重放不得再次重置。
+同一 `(canonical_peak_id, canonical_version)` 重放不得再次推进 latest 或重置。当前 latest
+分组的合法新版本即使未满足结构或 RSI 激活条件，仍推进 latest 快照，但保持其余正式状态
+不变。
 
 ## 6. DIVERGENCE_FORMING
 

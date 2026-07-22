@@ -177,6 +177,7 @@ class DivergenceTracker:
         self.previous: CanonicalPeak | None = None
         self.last_structural_peak: CanonicalPeak | None = None
         self.anchor: CanonicalPeak | None = None
+        self.latest_confirmed_canonical: CanonicalPeak | None = None
         self.divergence_count = 0
         self._evaluated_canonical_versions: set[tuple[str, int]] = set()
         self._formal_canonical_versions: dict[str, CanonicalPeak] = {}
@@ -202,6 +203,7 @@ class DivergenceTracker:
             key = (baseline.canonical_peak_id, baseline.canonical_version)
             self._evaluated_canonical_versions.add(key)
             self._formal_canonical_versions[baseline.canonical_peak_id] = deepcopy(baseline)
+            self.latest_confirmed_canonical = deepcopy(baseline)
 
     def process(
         self,
@@ -232,6 +234,7 @@ class DivergenceTracker:
             return None
 
         self._formal_canonical_versions[current.canonical_peak_id] = deepcopy(current)
+        self.latest_confirmed_canonical = deepcopy(current)
 
         if self.last_structural_peak is None:
             self._establish_initial(current)
@@ -357,14 +360,21 @@ class DivergenceTracker:
     ) -> DivergenceResult | None:
         """Apply the sole formal exception for a confirmed canonical version."""
         previous_version = self._formal_canonical_versions.get(current.canonical_peak_id)
+        latest_before = deepcopy(self.latest_confirmed_canonical)
         if (
             previous_version is None
-            or self.last_structural_peak is None
-            or self.anchor is None
+            or latest_before is None
+            or current.canonical_peak_id != latest_before.canonical_peak_id
             or current.canonical_version <= previous_version.canonical_version
             or current.peak_date <= previous_version.peak_date
             or not current.peak_date < current.confirm_date
         ):
+            return None
+
+        # A causal update advances the latest confirmed lineage even when it
+        # remains audit-only.  It does not by itself alter structural state.
+        self.latest_confirmed_canonical = deepcopy(current)
+        if self.last_structural_peak is None or self.anchor is None:
             return None
 
         previous = deepcopy(self.last_structural_peak)
@@ -383,6 +393,7 @@ class DivergenceTracker:
         local_delta = current.peak_rsi - previous.peak_rsi
         anchor_delta = current.peak_rsi - anchor_before.peak_rsi
         self._formal_canonical_versions[current.canonical_peak_id] = deepcopy(current)
+        self.latest_confirmed_canonical = deepcopy(current)
         self._close_chain_with(current)
         candidate = event.peak
         return self._result(
