@@ -14,7 +14,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8,<9"]
+test = [
+    "pytest>=8,<9",
+    "tomli>=2,<3; python_version < '3.11'",
+]
 amazingdata = ["pydantic>=2,<3", "tables>=3.10,<4"]
 
 [tool.setuptools.packages.find]
