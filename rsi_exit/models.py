@@ -24,6 +24,12 @@ class SignalType(str, Enum):
     LOWER_HIGH_WEAK_REBOUND = "LOWER_HIGH_WEAK_REBOUND"
     LOWER_PRICE_RSI_FLAT = "LOWER_PRICE_RSI_FLAT"
     LOWER_PRICE_RSI_IMPROVING = "LOWER_PRICE_RSI_IMPROVING"
+    NEW_HIGH_BEARISH_DIVERGENCE = "NEW_HIGH_BEARISH_DIVERGENCE"
+    NEAR_HIGH_BEARISH_DIVERGENCE = "NEAR_HIGH_BEARISH_DIVERGENCE"
+    STRUCTURAL_PEAK_WITHOUT_DIVERGENCE = "STRUCTURAL_PEAK_WITHOUT_DIVERGENCE"
+    INTRADAY_POTENTIAL_RETEST = "INTRADAY_POTENTIAL_RETEST"
+    NON_COMPARABLE_PEAK = "NON_COMPARABLE_PEAK"
+    DIVERGENCE_FORMING = "DIVERGENCE_FORMING"
 
 
 @dataclass
@@ -63,6 +69,11 @@ class Peak:
     cycle_id: str | None = None
     is_warmup: bool = False
     is_display_range: bool = True
+    peak_high: float | None = None
+    previous_day_close: float | None = None
+    peak_layer: str = "CANDIDATE_PEAK"
+    canonical_status: str = "CONFIRMED_CANONICAL_PEAK"
+    structural_eligible: bool = False
 
     def __post_init__(self) -> None:
         if self.candidate_peak_id is None:
@@ -94,6 +105,10 @@ class CanonicalPeak:
     rsi_retrace: float | None
     previous_canonical_peak_id: str | None
     cycle_id: str | None = None
+    peak_high: float | None = None
+    previous_day_close: float | None = None
+    canonical_status: str = "CONFIRMED_CANONICAL_PEAK"
+    structural_eligible: bool = False
 
     @property
     def peak_id(self) -> str:
@@ -109,6 +124,20 @@ class PeakEvent:
     canonical: CanonicalPeak | None = None
     canonical_created: bool = False
     canonical_updated: bool = False
+
+
+@dataclass(frozen=True)
+class FormingPeakEvent:
+    """Causal snapshot of a still-open potential canonical top."""
+
+    forming_peak_id: str
+    forming_version: int
+    peak_index: int
+    peak_date: pd.Timestamp
+    peak_high: float
+    peak_close: float
+    peak_rsi: float
+    previous_day_close: float
 
 
 @dataclass
@@ -136,6 +165,21 @@ class DivergenceResult:
     previous_peak_date: pd.Timestamp | None = None
     previous_peak_close: float | None = None
     previous_peak_rsi: float | None = None
+    previous_peak_high: float | None = None
+    previous_day_close: float | None = None
+    comparable_zone_low: float | None = None
+    comparable_zone_high: float | None = None
+    local_rsi_delta: float | None = None
+    anchor_rsi_delta: float | None = None
+    structural_eligible: bool = False
+    divergence_type: str | None = None
+    divergence_index: int = 0
+    signal_status: str = "FORMAL"
+    chain_reset_reason: str | None = None
+    divergence_chain_id: str | None = None
+    risk_cycle_id: str | None = None
+    position_eligible: bool = False
+    close_rejected_from_high_zone: bool = False
 
     @property
     def peak_id(self) -> str:

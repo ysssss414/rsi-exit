@@ -7,7 +7,7 @@ from dataclasses import asdict
 import numpy as np
 import pandas as pd
 
-from rsi_exit.models import CanonicalPeak, Peak, PeakEvent
+from rsi_exit.models import CanonicalPeak, FormingPeakEvent, Peak, PeakEvent
 
 
 class PeakDetectionError(ValueError):
@@ -36,6 +36,7 @@ class PeakDetector:
         self.min_price_retrace_pct = float(min_price_retrace_pct)
         self.price_tolerance_pct = float(price_tolerance_pct)
         self._canonical: dict[str, CanonicalPeak] = {}
+        self.forming_events: dict[pd.Timestamp, list[FormingPeakEvent]] = {}
 
     def detect(
         self,
@@ -49,6 +50,7 @@ class PeakDetector:
         ).sort_values().unique()
         records: list[Peak] = []
         events: dict[pd.Timestamp, list[PeakEvent]] = defaultdict(list)
+        self.forming_events = self._build_forming_events(data)
         active: CanonicalPeak | None = None
         candidate_number = 0
         canonical_number = 0
@@ -119,6 +121,8 @@ class PeakDetector:
                 previous_candidate_peak_id=old_representative,
                 previous_canonical_peak_id=old_canonical,
                 canonical_updated=updated,
+                peak_high=float(data.at[peak_index, "high"]),
+                previous_day_close=float(data.at[peak_index - 1, "close"]),
             )
 
             if independent or updated:
@@ -141,6 +145,8 @@ class PeakDetector:
                     price_retrace_pct=record.price_retrace_pct,
                     rsi_retrace=record.rsi_retrace,
                     previous_canonical_peak_id=old_canonical if independent else active.previous_canonical_peak_id,
+                    peak_high=record.peak_high,
+                    previous_day_close=record.previous_day_close,
                 )
                 self._canonical[canonical_id] = deepcopy(active)
             assert active is not None
@@ -183,13 +189,58 @@ class PeakDetector:
         missing = required - set(frame.columns)
         if missing:
             raise PeakDetectionError(f"高点识别缺少字段: {', '.join(sorted(missing))}")
-        data = frame.loc[:, ["date", "close", "rsi14"]].copy()
+        columns = ["date", "close", "rsi14"] + (["high"] if "high" in frame else [])
+        data = frame.loc[:, columns].copy()
+        if "high" not in data:
+            data["high"] = data["close"]
         data["date"] = pd.to_datetime(data["date"], errors="coerce")
         data["close"] = pd.to_numeric(data["close"], errors="coerce")
+        data["high"] = pd.to_numeric(data["high"], errors="coerce")
         data["rsi14"] = pd.to_numeric(data["rsi14"], errors="coerce")
         if data["date"].isna().any() or not data["date"].is_monotonic_increasing:
             raise PeakDetectionError("高点识别日期必须有效且升序")
         return data.reset_index(drop=True)
+
+    @staticmethod
+    def _build_forming_events(
+        data: pd.DataFrame,
+    ) -> dict[pd.Timestamp, list[FormingPeakEvent]]:
+        """Build prefix-causal snapshots without changing candidate detection."""
+        events: dict[pd.Timestamp, list[FormingPeakEvent]] = defaultdict(list)
+        active_id: str | None = None
+        active_version = 0
+        forming_number = 0
+        for index in range(1, len(data)):
+            values = (
+                data.at[index - 1, "close"], data.at[index, "close"],
+                data.at[index - 1, "rsi14"], data.at[index, "rsi14"],
+            )
+            rising = not any(pd.isna(value) for value in values) and bool(
+                data.at[index, "close"] > data.at[index - 1, "close"]
+                and data.at[index, "rsi14"] > data.at[index - 1, "rsi14"]
+            )
+            if not rising:
+                active_id = None
+                active_version = 0
+                continue
+            if active_id is None:
+                forming_number += 1
+                active_id = f"FPK{forming_number:04d}"
+                active_version = 1
+            else:
+                active_version += 1
+            date = pd.Timestamp(data.at[index, "date"])
+            events[date].append(FormingPeakEvent(
+                forming_peak_id=active_id,
+                forming_version=active_version,
+                peak_index=index,
+                peak_date=date,
+                peak_high=float(data.at[index, "high"]),
+                peak_close=float(data.at[index, "close"]),
+                peak_rsi=float(data.at[index, "rsi14"]),
+                previous_day_close=float(data.at[index - 1, "close"]),
+            ))
+        return dict(events)
 
     @staticmethod
     def _safe_min(series: pd.Series) -> float | None:

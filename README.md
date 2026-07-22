@@ -1,8 +1,8 @@
-# RSI卖点信号识别器 v0.2.1
+# RSI卖点信号识别器 v0.3.0
 
 面向 A 股日线趋势股的 RSI 卖点与持仓去偏系统。它生成可审计的风险约束，不读取成本、盈亏或持仓时间，不自动下单。
 
-v0.2.1 在 v0.2 基础上修复 signal cap 与 cycle reset 的同日待生效冲突，并补齐批量预热、预热信号溯源和参数化输出。AmazingData 仍是唯一在线行情源。
+v0.3.0 在 v0.2.1 基线上重构顶部背离：引入 structural peak、前峰真实交易日收盘可比区、新高/近高双 RSI 背离、独立 divergence chain 和只审计不入仓位的 forming 事件。AmazingData 仍是唯一在线行情源。
 
 ## 安装与测试
 
@@ -40,9 +40,9 @@ python -m rsi_exit.cli `
 单股目录 `outputs/rsi_exit/<symbol>/`：
 
 - `daily_features.csv`：同列输出 decision 与 effective 状态、动作和仓位上限；
-- `peaks.csv`：每个不可变候选峰及其 canonical、版本、周期和展示标志；
+- `peaks.csv`：每个不可变候选峰及其 canonical、结构资格、价格关系、双周期和展示标志；
 - `canonical_peaks.csv`：每个 canonical 的当前代表候选；
-- `signals.csv`：保留完整计算区间信号、预热/展示标志、cycle、current/previous canonical 版本快照、动能锚和生效日；
+- `signals.csv`：保留 forming/formal、new-high/near-high、可比区、last structural、动能锚、divergence chain、risk cycle 和生效日；
 - `state_log.csv`、`cycle_log.csv`：状态和周期重置审计；
 - `rsi_audit.csv`：原始/复权价格、因子、递推分子分母、预热标志和校验和；
 - `summary.md`、`regression_comparison.md`、`annotated_chart.png`。
@@ -54,8 +54,8 @@ python -m rsi_exit.cli `
 - 峰值 `t` 只在 `t+1` 双下降后确认，最早 `t+2` 生效；基础状态也只在下一真实交易日生效。
 - S3/S4 中 RSI≥strong 且收盘高于 MA 时产生一次 `ALLOW_REENTRY`，基础状态回到 S0；S5 仅保留枚举兼容，不驻留。
 - 默认候选只要求 `t` 相对 `t-1` 双上升、`t+1` 双下降。三日窗口最大值仅在 `require_recent_window_max=true` 时启用。
-- RSI 恰好下降配置容差计为背离；低价且 RSI 容差内持平归为 `LOWER_PRICE_RSI_FLAT`。
-- 同日先保存峰值关系，再执行只影响未来的周期重置。全局同波段合并和局部背离周期互不耦合。
+- RSI 恰好下降 1.0 点计为背离；正式背离同时验证相邻结构峰和 momentum anchor。
+- 同日先保存不可变正式快照；risk cycle 与 divergence chain 互不耦合，S3/再入不清背离链。
 - 普通信号上限使用 `APPLY_SIGNAL_CAP`，周期重置使用 `RESET_SIGNAL_DOMAIN`；reset 使旧 cycle 的待生效和已生效信号约束失效，新 cycle 从 signal cap=1.0 开始。
 
 批量 Python 入口必须显式传入展示区间，避免把计算区间首日误当展示首日：
@@ -69,4 +69,4 @@ results, summary = run_batch(
 )
 ```
 
-详细口径见 [v0.2 技术说明](docs/rsi_exit_v02.md)。[v0.1 技术说明](docs/rsi_exit_v01.md) 保留为历史基线。
+冻结口径见 [v0.3 顶部背离规格](docs/specs/rsi_exit_v0.3_top_divergence_spec_v0.2.md)。[v0.2 技术说明](docs/rsi_exit_v02.md) 与 [v0.1 技术说明](docs/rsi_exit_v01.md) 保留为历史基线。

@@ -59,9 +59,13 @@ def test_all_peak_confirm_and_action_dates_are_causal() -> None:
         > pd.to_datetime(non_terminal["confirm_date"])
     ).all()
     if not result.signals.empty:
+        formal = result.signals.loc[
+            (result.signals["signal_status"] == "FORMAL")
+            & result.signals["earliest_action_date"].notna()
+        ]
         assert (
-            pd.to_datetime(result.signals["earliest_action_date"])
-            > pd.to_datetime(result.signals["signal_date"])
+            pd.to_datetime(formal["earliest_action_date"])
+            > pd.to_datetime(formal["signal_date"])
         ).all()
 
 

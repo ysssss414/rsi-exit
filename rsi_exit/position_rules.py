@@ -19,7 +19,11 @@ def divergence_position_rule(
         "weak_rebound_above_life": 0.7,
         "weak_rebound_below_life": 0.4,
     }
-    if signal_type == SignalType.BEARISH_DIVERGENCE:
+    if signal_type in {
+        SignalType.BEARISH_DIVERGENCE,
+        SignalType.NEW_HIGH_BEARISH_DIVERGENCE,
+        SignalType.NEAR_HIGH_BEARISH_DIVERGENCE,
+    }:
         if divergence_count >= 3:
             return "EXIT_ON_THIRD_DIVERGENCE", float(caps["third_divergence"])
         if confirm_rsi < life_level:

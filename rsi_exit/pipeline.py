@@ -9,9 +9,9 @@ import numpy as np
 import pandas as pd
 
 from rsi_exit.config import RsiExitConfig
-from rsi_exit.divergence import DivergenceTracker
+from rsi_exit.divergence import DivergenceTracker, FORMAL_DIVERGENCES
 from rsi_exit.indicators import calculate_rsi_audit, rsi_zone
-from rsi_exit.models import BaseState, CanonicalPeak, SignalType
+from rsi_exit.models import BaseState, SignalType
 from rsi_exit.peak_detector import PeakDetector
 from rsi_exit.position_rules import divergence_position_rule, merge_position_caps
 from rsi_exit.state_machine import RsiExitStateMachine
@@ -38,7 +38,7 @@ SIGNAL_COLUMNS = [
     "current_candidate_peak_id", "current_canonical_peak_id", "current_canonical_version",
     "representative_candidate_id", "previous_candidate_peak_id",
     "previous_canonical_peak_id", "previous_canonical_version", "cycle_id",
-    "current_peak_date", "current_peak_close", "current_peak_rsi",
+    "current_peak_date", "current_peak_high", "current_peak_close", "current_peak_rsi",
     "signal_type", "price_relation", "rsi_relation", "divergence_count",
     "confirm_rsi", "confirm_rsi_zone", "divergence_position_cap",
     "decision_base_state", "decision_base_position_cap",
@@ -47,6 +47,12 @@ SIGNAL_COLUMNS = [
     "momentum_anchor_canonical_version", "momentum_anchor_date",
     "momentum_anchor_close", "momentum_anchor_rsi", "price_vs_anchor_pct",
     "rsi_vs_anchor", "reset_reason", "reason",
+    "peak_layer", "canonical_status", "last_structural_peak_id",
+    "previous_peak_high", "previous_day_close", "comparable_zone_low",
+    "comparable_zone_high", "local_rsi_delta", "anchor_rsi_delta",
+    "structural_eligible", "divergence_type", "divergence_index",
+    "signal_status", "chain_reset_reason", "divergence_chain_id",
+    "risk_cycle_id", "position_eligible", "close_rejected_from_high_zone",
     "pending_action_type", "invalidated_by_cycle_reset",
     "invalidated_on_date", "invalidated_effective_date",
     "is_warmup", "is_display_range",
@@ -194,17 +200,23 @@ def analyze_bars(
         min_peak_gap=int(peak_cfg["min_peak_gap"]),
         min_rsi_retrace=float(peak_cfg["min_rsi_retrace"]),
         min_price_retrace_pct=float(peak_cfg["min_price_retrace_pct"]),
-        price_tolerance_pct=float(div_cfg["price_tolerance_pct"]),
+        price_tolerance_pct=float(peak_cfg.get("canonical_price_tolerance_pct", 0.005)),
     )
     detector_data = data.copy()
     detector_data["rsi14"] = data["rsi"]
     peaks, peak_events = detector.detect(detector_data, trading_calendar=data["date"])
     canonical_peaks = detector.canonical_peaks_frame()
     tracker = DivergenceTracker(
-        price_tolerance_pct=float(div_cfg["price_tolerance_pct"]),
-        rsi_tolerance=float(div_cfg["rsi_tolerance"]),
-        max_peak_gap=int(peak_cfg["max_peak_gap"]),
-        cycle_reset_rsi=float(div_cfg["reset_rsi_level"]),
+        price_epsilon=float(div_cfg["price_epsilon"]),
+        divergence_rsi_tolerance=float(div_cfg["divergence_rsi_tolerance"]),
+        anchor_rsi_tolerance=float(div_cfg["anchor_rsi_tolerance"]),
+        momentum_strengthening_tolerance=float(div_cfg["momentum_strengthening_tolerance"]),
+        anchor_reset_tolerance=float(div_cfg["anchor_reset_tolerance"]),
+        deep_reset_rsi_level=float(div_cfg["deep_reset_rsi_level"]),
+        deep_reset_consecutive_days=int(div_cfg["deep_reset_consecutive_days"]),
+        extreme_reset_rsi_level=float(div_cfg["extreme_reset_rsi_level"]),
+        max_structural_peak_gap=int(div_cfg["max_structural_peak_gap"]),
+        rsi_values=data["rsi"].tolist(),
     )
     machine = RsiExitStateMachine(
         levels={key: float(value) for key, value in levels.items()},
@@ -216,7 +228,8 @@ def analyze_bars(
     effective_base_state = BaseState.UNINITIALIZED
     effective_base_cap = float(caps["uninitialized"])
     effective_base_action = "WAIT_FOR_WARMUP"
-    signal_queue = SignalCapQueue(tracker.cycle_id)
+    risk_cycle_id = "CYCLE0001"
+    signal_queue = SignalCapQueue(risk_cycle_id)
     decision_signal_cap = 1.0
     decision_signal_action = "NO_DIVERGENCE_REDUCTION"
     current_divergence_count = 0
@@ -227,7 +240,10 @@ def analyze_bars(
     cycle_seq = 1
     cycle_start = data["date"].iloc[0]
     candidate_cycle: dict[str, str] = {}
+    candidate_chain: dict[str, str] = {}
     anchor_by_candidate: dict[str, str] = {}
+    peak_audit_by_candidate: dict[str, dict[str, Any]] = {}
+    structural_candidate_by_canonical: dict[str, str] = {}
 
     def add_base_pending(date: pd.Timestamp | pd.NaT, entry: dict[str, Any]) -> None:
         if pd.isna(date):
@@ -252,21 +268,166 @@ def analyze_bars(
         day_signal_type: str | None = None
         day_reason: str | None = None
         reset_reasons: list[str] = []
-        reset_baseline: CanonicalPeak | None = None
         entered_s3 = transition.previous_state != BaseState.S3_EXIT and transition.current_state == BaseState.S3_EXIT
 
+        for forming in detector.forming_events.get(date, []):
+            forming_result = tracker.preview_forming(
+                forming, risk_cycle_id=risk_cycle_id
+            )
+            if forming_result is None:
+                continue
+            forming_action, forming_final_cap = merge_position_caps(
+                base_action=transition.action,
+                base_cap=transition.position_cap,
+                signal_action=decision_signal_action,
+                signal_cap=decision_signal_cap,
+            )
+            reason = (
+                f"{forming_result.price_relation}; {forming_result.rsi_relation}; "
+                f"forming={forming.forming_peak_id}@v{forming.forming_version}; "
+                "audit only; position ineligible"
+            )
+            signals.append({
+                "decision_date": _date_text(date),
+                "earliest_action_date": None,
+                "effective_date": None,
+                "signal_date": _date_text(date),
+                "candidate_peak_id": forming.forming_peak_id,
+                "canonical_peak_id": forming.forming_peak_id,
+                "canonical_version": forming.forming_version,
+                "current_candidate_peak_id": forming.forming_peak_id,
+                "current_canonical_peak_id": forming.forming_peak_id,
+                "current_canonical_version": forming.forming_version,
+                "representative_candidate_id": forming.forming_peak_id,
+                "previous_candidate_peak_id": forming_result.previous_candidate_peak_id,
+                "previous_canonical_peak_id": forming_result.previous_canonical_peak_id,
+                "previous_canonical_version": forming_result.previous_canonical_version,
+                "cycle_id": risk_cycle_id,
+                "current_peak_date": _date_text(forming.peak_date),
+                "current_peak_high": forming.peak_high,
+                "current_peak_close": forming.peak_close,
+                "current_peak_rsi": forming.peak_rsi,
+                "signal_type": SignalType.DIVERGENCE_FORMING.value,
+                "price_relation": forming_result.price_relation,
+                "rsi_relation": forming_result.rsi_relation,
+                "divergence_count": tracker.divergence_count,
+                "confirm_rsi": forming.peak_rsi,
+                "confirm_rsi_zone": rsi_zone(
+                    forming.peak_rsi,
+                    **{k: float(levels[k]) for k in ("strong", "life", "neutral", "weak")},
+                ),
+                "divergence_position_cap": 1.0,
+                "decision_base_state": transition.current_state.value,
+                "decision_base_position_cap": transition.position_cap,
+                "decision_signal_position_cap": decision_signal_cap,
+                "decision_final_position_cap": forming_final_cap,
+                "decision_action": forming_action,
+                "momentum_anchor_candidate_id": forming_result.momentum_anchor_candidate_id,
+                "momentum_anchor_canonical_id": forming_result.momentum_anchor_canonical_id,
+                "momentum_anchor_canonical_version": forming_result.momentum_anchor_canonical_version,
+                "momentum_anchor_date": _date_text(forming_result.momentum_anchor_date),
+                "momentum_anchor_close": forming_result.momentum_anchor_close,
+                "momentum_anchor_rsi": forming_result.momentum_anchor_rsi,
+                "price_vs_anchor_pct": forming_result.price_vs_anchor_pct,
+                "rsi_vs_anchor": forming_result.rsi_vs_anchor,
+                "reset_reason": None,
+                "reason": reason,
+                "peak_layer": "FORMING_CANONICAL_PEAK",
+                "canonical_status": "FORMING_CANONICAL_PEAK",
+                "last_structural_peak_id": forming_result.previous_canonical_peak_id,
+                "previous_peak_high": forming_result.previous_peak_high,
+                "previous_day_close": forming_result.previous_day_close,
+                "comparable_zone_low": forming_result.comparable_zone_low,
+                "comparable_zone_high": forming_result.comparable_zone_high,
+                "local_rsi_delta": forming_result.local_rsi_delta,
+                "anchor_rsi_delta": forming_result.anchor_rsi_delta,
+                "structural_eligible": False,
+                "divergence_type": SignalType.DIVERGENCE_FORMING.value,
+                "divergence_index": tracker.divergence_count,
+                "signal_status": "FORMING",
+                "chain_reset_reason": None,
+                "divergence_chain_id": tracker.divergence_chain_id,
+                "risk_cycle_id": risk_cycle_id,
+                "position_eligible": False,
+                "close_rejected_from_high_zone": forming_result.close_rejected_from_high_zone,
+                "pending_action_type": None,
+                "invalidated_by_cycle_reset": False,
+                "invalidated_on_date": None,
+                "invalidated_effective_date": None,
+                "is_warmup": date < display_start,
+                "is_display_range": display_start <= date <= display_end,
+                "peak_id": forming.forming_peak_id,
+                "previous_peak_id": forming_result.previous_candidate_peak_id,
+                "previous_peak_date": _date_text(forming_result.previous_peak_date),
+                "previous_peak_close": forming_result.previous_peak_close,
+                "previous_peak_rsi": forming_result.previous_peak_rsi,
+                "base_state": transition.current_state.value,
+                "base_position_cap": transition.position_cap,
+                "final_position_cap": forming_final_cap,
+                "final_action": forming_action,
+            })
+            day_signal_type, day_reason = SignalType.DIVERGENCE_FORMING.value, reason
+
         for event in peak_events.get(date, []):
-            cycle_id = tracker.cycle_id
+            cycle_id = risk_cycle_id
             event.peak.cycle_id = cycle_id
             if event.canonical is not None:
                 event.canonical.cycle_id = cycle_id
             candidate_id = event.peak.candidate_peak_id or event.peak.peak_id
             candidate_cycle[candidate_id] = cycle_id
-            result = tracker.process(event)
+            result = tracker.process(event, risk_cycle_id=risk_cycle_id)
+            candidate_chain[candidate_id] = tracker.divergence_chain_id
             if tracker.anchor is not None:
                 anchor_by_candidate[candidate_id] = tracker.anchor.representative_candidate_id
             if result is None:
+                if (
+                    tracker.last_structural_peak is not None
+                    and event.canonical is not None
+                    and tracker.last_structural_peak.canonical_peak_id
+                    == event.canonical.canonical_peak_id
+                    and tracker.last_structural_peak.representative_candidate_id
+                    == candidate_id
+                ):
+                    replaced = structural_candidate_by_canonical.get(
+                        event.canonical.canonical_peak_id
+                    )
+                    if replaced is not None:
+                        peak_audit_by_candidate.pop(replaced, None)
+                    structural_candidate_by_canonical[
+                        event.canonical.canonical_peak_id
+                    ] = candidate_id
+                    peak_audit_by_candidate[candidate_id] = {
+                        "peak_layer": "STRUCTURAL_PEAK",
+                        "structural_eligible": True,
+                        "price_relation": "MOMENTUM_ANCHOR",
+                        "divergence_type": None,
+                        "divergence_index": tracker.divergence_count,
+                        "signal_status": "FORMAL",
+                        "divergence_chain_id": tracker.divergence_chain_id,
+                    }
                 continue
+
+            peak_audit_by_candidate[candidate_id] = {
+                "peak_layer": (
+                    "STRUCTURAL_PEAK" if result.structural_eligible
+                    else "CONFIRMED_CANONICAL_PEAK"
+                ),
+                "structural_eligible": result.structural_eligible,
+                "price_relation": result.price_relation,
+                "divergence_type": result.divergence_type,
+                "divergence_index": result.divergence_index,
+                "signal_status": result.signal_status,
+                "divergence_chain_id": result.divergence_chain_id,
+                "previous_day_close": result.previous_day_close,
+                "comparable_zone_low": result.comparable_zone_low,
+                "comparable_zone_high": result.comparable_zone_high,
+                "local_rsi_delta": result.local_rsi_delta,
+                "anchor_rsi_delta": result.anchor_rsi_delta,
+                "chain_reset_reason": result.chain_reset_reason,
+                "position_eligible": result.position_eligible,
+            }
+            if result.structural_eligible:
+                structural_candidate_by_canonical[result.canonical_peak_id] = candidate_id
 
             current_divergence_count = result.divergence_count
             signal_action, raw_signal_cap = divergence_position_rule(
@@ -279,20 +440,18 @@ def analyze_bars(
                 decision_signal_cap = 1.0
                 decision_signal_action = RESET_SIGNAL_DOMAIN
                 reset_reasons.append(result.reset_reason)
-                reset_baseline = deepcopy(event.canonical)
-            elif result.signal_type in {SignalType.BEARISH_DIVERGENCE, SignalType.LOWER_HIGH_WEAK_REBOUND}:
+            elif result.signal_type in FORMAL_DIVERGENCES and result.position_eligible:
                 if raw_signal_cap <= decision_signal_cap:
                     decision_signal_action = signal_action
                 decision_signal_cap = min(decision_signal_cap, raw_signal_cap)
                 if decision_signal_cap != before_signal_cap:
                     pending_action_type = APPLY_SIGNAL_CAP
 
-            if result.signal_type == SignalType.BEARISH_DIVERGENCE and result.divergence_count >= 3 and result.reset_reason is None:
+            if result.signal_type in FORMAL_DIVERGENCES and result.divergence_count >= 3 and result.reset_reason is None:
                 transition = machine.force_exit("THIRD_DIVERGENCE")
                 entered_s3 = True
                 if "THIRD_DIVERGENCE" not in reset_reasons:
                     reset_reasons.append("THIRD_DIVERGENCE")
-                reset_baseline = None
 
             action_date = event.peak.earliest_action_date
             decision_action, decision_final_cap = merge_position_caps(
@@ -321,6 +480,7 @@ def analyze_bars(
                 "previous_canonical_version": result.previous_canonical_version,
                 "cycle_id": result.cycle_id, "signal_type": result.signal_type.value,
                 "current_peak_date": _date_text(event.peak.peak_date),
+                "current_peak_high": event.peak.peak_high,
                 "current_peak_close": event.peak.peak_close,
                 "current_peak_rsi": event.peak.peak_rsi,
                 "price_relation": result.price_relation, "rsi_relation": result.rsi_relation,
@@ -340,6 +500,27 @@ def analyze_bars(
                 "momentum_anchor_rsi": result.momentum_anchor_rsi,
                 "price_vs_anchor_pct": result.price_vs_anchor_pct, "rsi_vs_anchor": result.rsi_vs_anchor,
                 "reset_reason": result.reset_reason, "reason": reason,
+                "peak_layer": (
+                    "STRUCTURAL_PEAK" if result.structural_eligible
+                    else "CONFIRMED_CANONICAL_PEAK"
+                ),
+                "canonical_status": "CONFIRMED_CANONICAL_PEAK",
+                "last_structural_peak_id": result.previous_canonical_peak_id,
+                "previous_peak_high": result.previous_peak_high,
+                "previous_day_close": result.previous_day_close,
+                "comparable_zone_low": result.comparable_zone_low,
+                "comparable_zone_high": result.comparable_zone_high,
+                "local_rsi_delta": result.local_rsi_delta,
+                "anchor_rsi_delta": result.anchor_rsi_delta,
+                "structural_eligible": result.structural_eligible,
+                "divergence_type": result.divergence_type,
+                "divergence_index": result.divergence_index,
+                "signal_status": result.signal_status,
+                "chain_reset_reason": result.chain_reset_reason,
+                "divergence_chain_id": result.divergence_chain_id,
+                "risk_cycle_id": risk_cycle_id,
+                "position_eligible": result.position_eligible,
+                "close_rejected_from_high_zone": result.close_rejected_from_high_zone,
                 "pending_action_type": pending_action_type,
                 "invalidated_by_cycle_reset": False,
                 "invalidated_on_date": None,
@@ -373,7 +554,6 @@ def analyze_bars(
 
         if entered_s3 and "STATE_ENTERED_S3" not in reset_reasons:
             reset_reasons.append("STATE_ENTERED_S3")
-            reset_baseline = None
 
         next_date = pd.Timestamp(dates[row_index + 1]) if row_index + 1 < len(dates) else pd.NaT
         add_base_pending(next_date, {
@@ -384,7 +564,7 @@ def analyze_bars(
         new_cycle_id: str | None = None
         if reset_reasons:
             reason = "|".join(dict.fromkeys(reset_reasons))
-            old_cycle_id = tracker.cycle_id
+            old_cycle_id = risk_cycle_id
             cycle_seq += 1
             new_cycle_id = f"CYCLE{cycle_seq:04d}"
             signal_queue.schedule_reset(
@@ -401,7 +581,6 @@ def analyze_bars(
                     signal["invalidated_effective_date"] = _date_text(next_date)
             decision_signal_cap = 1.0
             decision_signal_action = RESET_SIGNAL_DOMAIN
-            current_divergence_count = 0
             cycle_rows.append({
                 "cycle_id": old_cycle_id,
                 "new_cycle_id": new_cycle_id,
@@ -410,6 +589,8 @@ def analyze_bars(
                 "reset_decision_date": _date_text(date), "reset_effective_date": _date_text(next_date),
                 "signal_domain_action_type": RESET_SIGNAL_DOMAIN,
                 "cycle_reset_event": True,
+                "risk_cycle_id": old_cycle_id,
+                "divergence_chain_id": tracker.divergence_chain_id,
             })
 
         effective_action, effective_final_cap = merge_position_caps(
@@ -472,7 +653,9 @@ def analyze_bars(
             "rsi": row["rsi"], "close": row["close"], "ma": row["ma"],
             "divergence_count": current_divergence_count, "signal_type": day_signal_type,
             "decision_position_cap": decision_final_cap, "effective_position_cap": effective_final_cap,
-            "position_cap": effective_final_cap, "signal_reason": day_reason, "cycle_id": tracker.cycle_id,
+            "position_cap": effective_final_cap, "signal_reason": day_reason, "cycle_id": risk_cycle_id,
+            "risk_cycle_id": risk_cycle_id,
+            "divergence_chain_id": tracker.divergence_chain_id,
             "cycle_reset_event": bool(reset_reasons),
             "cycle_reset_reason": "|".join(dict.fromkeys(reset_reasons)) if reset_reasons else None,
         }
@@ -483,15 +666,17 @@ def analyze_bars(
         if reset_reasons:
             assert new_cycle_id is not None
             cycle_start = next_date if not pd.isna(next_date) else date
-            tracker.reset_cycle(new_cycle_id, baseline=reset_baseline)
+            risk_cycle_id = new_cycle_id
 
     cycle_rows.append({
-        "cycle_id": tracker.cycle_id, "new_cycle_id": None,
+        "cycle_id": risk_cycle_id, "new_cycle_id": None,
         "cycle_start_date": _date_text(cycle_start),
         "cycle_end_date": _date_text(data["date"].iloc[-1]), "reset_reason": None,
         "reset_decision_date": None, "reset_effective_date": None,
         "signal_domain_action_type": None,
         "cycle_reset_event": False,
+        "risk_cycle_id": risk_cycle_id,
+        "divergence_chain_id": tracker.divergence_chain_id,
     })
 
     daily = pd.DataFrame(daily_rows)
@@ -505,12 +690,47 @@ def analyze_bars(
 
     if not peaks.empty:
         peaks["cycle_id"] = peaks["candidate_peak_id"].map(candidate_cycle)
+        peaks["risk_cycle_id"] = peaks["cycle_id"]
+        peaks["divergence_chain_id"] = peaks["candidate_peak_id"].map(candidate_chain)
         confirm_dates = pd.to_datetime(peaks["confirm_date"])
         peaks["is_warmup"] = confirm_dates < display_start
         peaks["is_display_range"] = confirm_dates.between(display_start, display_end)
         peaks["momentum_anchor_peak_id"] = peaks["candidate_peak_id"].map(anchor_by_candidate)
+        peaks["canonical_status"] = "CONFIRMED_CANONICAL_PEAK"
+        peaks["peak_layer"] = "CANDIDATE_PEAK"
+        representative = peaks["candidate_peak_id"] == peaks["representative_candidate_id"]
+        peaks.loc[representative, "peak_layer"] = "CONFIRMED_CANONICAL_PEAK"
+        audit_columns = (
+            "peak_layer", "structural_eligible", "price_relation", "divergence_type",
+            "divergence_index", "signal_status", "divergence_chain_id",
+            "previous_day_close", "comparable_zone_low", "comparable_zone_high",
+            "local_rsi_delta", "anchor_rsi_delta", "chain_reset_reason",
+            "position_eligible",
+        )
+        for column in audit_columns:
+            mapped = peaks["candidate_peak_id"].map(
+                lambda candidate: peak_audit_by_candidate.get(candidate, {}).get(column)
+            )
+            if column == "peak_layer":
+                peaks[column] = mapped.fillna(peaks[column])
+            elif column == "divergence_chain_id":
+                peaks[column] = mapped.fillna(peaks[column])
+            else:
+                peaks[column] = mapped
     if not canonical_peaks.empty:
         canonical_peaks["cycle_id"] = canonical_peaks["representative_candidate_id"].map(candidate_cycle)
+        canonical_peaks["risk_cycle_id"] = canonical_peaks["cycle_id"]
+        canonical_peaks["divergence_chain_id"] = canonical_peaks["representative_candidate_id"].map(candidate_chain)
+        canonical_peaks["peak_layer"] = canonical_peaks["representative_candidate_id"].map(
+            lambda candidate: peak_audit_by_candidate.get(candidate, {}).get(
+                "peak_layer", "CONFIRMED_CANONICAL_PEAK"
+            )
+        )
+        canonical_peaks["structural_eligible"] = canonical_peaks["representative_candidate_id"].map(
+            lambda candidate: bool(
+                peak_audit_by_candidate.get(candidate, {}).get("structural_eligible", False)
+            )
+        )
 
     input_checksum = _input_checksum(data)
     rsi_audit_values = {
@@ -608,9 +828,12 @@ def build_validation_summary(results: Iterable[AnalysisResult]) -> pd.DataFrame:
             "backtest_ineligible_reason": ineligible_reason,
             "peak_count": int((result.peaks["is_display_range"] & result.peaks["is_independent_peak"]).sum()) if not result.peaks.empty else 0,
             "strengthening_count": _signal_count(signals, SignalType.TREND_STRENGTHENING),
-            "divergence_count_1": _signal_count(signals, SignalType.BEARISH_DIVERGENCE, 1),
-            "divergence_count_2": _signal_count(signals, SignalType.BEARISH_DIVERGENCE, 2),
-            "divergence_count_3": int(((signals["signal_type"] == SignalType.BEARISH_DIVERGENCE.value) & (signals["divergence_count"] >= 3)).sum()) if not signals.empty else 0,
+            "divergence_count_1": _formal_divergence_count(signals, 1),
+            "divergence_count_2": _formal_divergence_count(signals, 2),
+            "divergence_count_3": _formal_divergence_count(signals, 3, at_least=True),
+            "new_high_divergence_count": _signal_count(signals, SignalType.NEW_HIGH_BEARISH_DIVERGENCE),
+            "near_high_divergence_count": _signal_count(signals, SignalType.NEAR_HIGH_BEARISH_DIVERGENCE),
+            "forming_divergence_count": _signal_count(signals, SignalType.DIVERGENCE_FORMING),
             "weak_rebound_count": _signal_count(signals, SignalType.LOWER_HIGH_WEAK_REBOUND),
             "current_rsi": current["rsi"], "current_state": current["decision_base_state"],
             "current_position_cap": current["effective_final_position_cap"],
@@ -624,6 +847,21 @@ def _signal_count(signals: pd.DataFrame, kind: SignalType, count: int | None = N
         return 0
     mask = signals["signal_type"] == kind.value
     if count is not None:
+        mask &= signals["divergence_count"] == count
+    return int(mask.sum())
+
+
+def _formal_divergence_count(
+    signals: pd.DataFrame, count: int, *, at_least: bool = False
+) -> int:
+    if signals.empty:
+        return 0
+    mask = signals["signal_type"].isin(
+        [kind.value for kind in FORMAL_DIVERGENCES]
+    )
+    if at_least:
+        mask &= signals["divergence_count"] >= count
+    else:
         mask &= signals["divergence_count"] == count
     return int(mask.sum())
 
@@ -663,7 +901,7 @@ def _build_warnings(data: pd.DataFrame, peaks: pd.DataFrame, actual: int, reques
         warnings.append("末端高点已确认，但最早执行日超出当前行情区间。")
     if peaks.empty:
         warnings.append("当前计算区间未识别到双下降确认候选。")
-    warnings.append("高点使用收盘价而非盘中最高价；确认日只生成决策，最早在下一真实交易日生效。")
+    warnings.append("candidate 仍按收盘价与RSI识别；v0.3结构价格关系使用最高价和前峰可比区。确认日只生成决策，最早在下一真实交易日生效。")
     return warnings
 
 

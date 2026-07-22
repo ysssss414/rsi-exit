@@ -24,7 +24,7 @@ class RsiExitConfig:
 
 
 def default_config_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "config" / "rsi_exit_v02.yaml"
+    return Path(__file__).resolve().parents[1] / "config" / "rsi_exit_v03.yaml"
 
 
 def load_config(path: str | Path | None = None) -> RsiExitConfig:
@@ -87,11 +87,34 @@ def _validate(raw: dict[str, Any]) -> None:
         raise ConfigError("peak_detection.require_recent_window_max 必须是布尔值")
     _number(peak, "min_rsi_retrace", minimum=0)
     _number(peak, "min_price_retrace_pct", minimum=0)
+    if "canonical_price_tolerance_pct" in peak:
+        _number(peak, "canonical_price_tolerance_pct", minimum=0)
 
     divergence = raw["divergence"]
-    _number(divergence, "price_tolerance_pct", minimum=0)
-    _number(divergence, "rsi_tolerance", minimum=0)
-    _number(divergence, "reset_rsi_level")
+    if "comparable_zone_mode" in divergence:
+        if divergence.get("comparable_zone_mode") != "PREVIOUS_CLOSE_TO_PEAK_CLOSE":
+            raise ConfigError(
+                "divergence.comparable_zone_mode 必须为 PREVIOUS_CLOSE_TO_PEAK_CLOSE"
+            )
+        for key in (
+            "price_epsilon", "divergence_rsi_tolerance", "anchor_rsi_tolerance",
+            "momentum_strengthening_tolerance", "anchor_reset_tolerance",
+            "deep_reset_rsi_level", "extreme_reset_rsi_level",
+        ):
+            _number(divergence, key, minimum=0)
+        _integer(divergence, "deep_reset_consecutive_days", minimum=1)
+        _integer(divergence, "max_structural_peak_gap", minimum=1)
+        if not isinstance(divergence.get("forming_divergence_position_eligible"), bool):
+            raise ConfigError(
+                "divergence.forming_divergence_position_eligible 必须是布尔值"
+            )
+        if divergence["forming_divergence_position_eligible"]:
+            raise ConfigError("v0.3 forming divergence 不得进入仓位系统")
+    else:
+        # Historical v0.1/v0.2 files remain readable for regression work.
+        _number(divergence, "price_tolerance_pct", minimum=0)
+        _number(divergence, "rsi_tolerance", minimum=0)
+        _number(divergence, "reset_rsi_level")
 
     caps = raw["position_caps"]
     expected_caps = {

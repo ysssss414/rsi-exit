@@ -20,6 +20,17 @@ SIGNAL_STYLE = {
     SignalType.LOWER_HIGH_WEAK_REBOUND.value: ("X", "WR"),
     SignalType.LOWER_PRICE_RSI_FLAT.value: ("D", "FLAT"),
     SignalType.LOWER_PRICE_RSI_IMPROVING.value: ("s", "RI"),
+    SignalType.NEW_HIGH_BEARISH_DIVERGENCE.value: ("v", "NHD"),
+    SignalType.NEAR_HIGH_BEARISH_DIVERGENCE.value: ("P", "NRTD"),
+    SignalType.NON_COMPARABLE_PEAK.value: ("x", "NC"),
+    SignalType.INTRADAY_POTENTIAL_RETEST.value: ("1", "IPR"),
+    SignalType.DIVERGENCE_FORMING.value: ("+", "FORM"),
+}
+
+FORMAL_DIVERGENCE_VALUES = {
+    SignalType.BEARISH_DIVERGENCE.value,
+    SignalType.NEW_HIGH_BEARISH_DIVERGENCE.value,
+    SignalType.NEAR_HIGH_BEARISH_DIVERGENCE.value,
 }
 
 
@@ -60,6 +71,19 @@ def create_annotated_chart(
             signals = signals.loc[signals["is_display_range"].astype(bool)].copy()
         signals["signal_date"] = pd.to_datetime(signals["signal_date"])
         signals["previous_peak_date"] = pd.to_datetime(signals["previous_peak_date"])
+        forming_mask = signals["signal_type"] == SignalType.DIVERGENCE_FORMING.value
+        signals = pd.concat([
+            signals.loc[~forming_mask],
+            signals.loc[forming_mask].drop_duplicates("candidate_peak_id", keep="first"),
+        ]).sort_values("signal_date")
+
+    candidates = result.peaks.copy()
+    if not candidates.empty:
+        candidates["peak_date"] = pd.to_datetime(candidates["peak_date"])
+        candidates["confirm_date"] = pd.to_datetime(candidates["confirm_date"])
+        candidates = candidates.loc[
+            candidates["confirm_date"].between(daily["date"].min(), daily["date"].max())
+        ]
 
     fig, (price_ax, rsi_ax) = plt.subplots(
         2,
@@ -76,6 +100,12 @@ def create_annotated_chart(
     life_level = float(configured_levels["life"])
     price_ax.plot(daily["date"], daily["close"], linewidth=1.6, label="Close")
     price_ax.plot(daily["date"], daily["ma"], linestyle="--", linewidth=1.2, label=f"MA{ma_period}")
+
+    if not candidates.empty:
+        price_ax.scatter(
+            candidates["peak_date"], candidates["peak_close"], marker=".",
+            color="0.55", s=22, label="Candidate peak", zorder=3,
+        )
 
     if not peaks.empty:
         representatives = peaks
@@ -118,6 +148,22 @@ def create_annotated_chart(
                 ha="center",
             )
 
+        if "structural_eligible" in representatives:
+            structural = representatives.loc[
+                representatives["structural_eligible"].fillna(False).astype(bool)
+            ]
+            if not structural.empty:
+                price_ax.scatter(
+                    structural["peak_date"], structural["peak_close"], marker="s",
+                    facecolors="none", edgecolors="tab:purple", s=95,
+                    label="Structural peak", zorder=5,
+                )
+                rsi_ax.scatter(
+                    structural["peak_date"], structural["peak_rsi"], marker="s",
+                    facecolors="none", edgecolors="tab:purple", s=80,
+                    label="Structural peak RSI", zorder=5,
+                )
+
     for signal_type, (marker, short_label) in SIGNAL_STYLE.items():
         subset = signals.loc[signals["signal_type"] == signal_type]
         if subset.empty:
@@ -128,22 +174,22 @@ def create_annotated_chart(
         rsi_y = subset["signal_date"].map(
             daily.set_index("date")["rsi"].to_dict()
         )
+        event_label = "snapshot" if signal_type == SignalType.DIVERGENCE_FORMING.value else "confirmation"
         price_ax.scatter(
             subset["signal_date"], price_y, marker=marker, s=85,
-            label=f"{short_label} confirmation", zorder=5
+            label=f"{short_label} {event_label}", zorder=5
         )
         rsi_ax.scatter(
             subset["signal_date"], rsi_y, marker=marker, s=70,
-            label=f"{short_label} confirmation", zorder=5
+            label=f"{short_label} {event_label}", zorder=5
         )
         for row_index, (_, signal) in enumerate(subset.iterrows()):
             count = int(signal["divergence_count"])
-            suffix = str(count) if signal_type == SignalType.BEARISH_DIVERGENCE.value else ""
+            suffix = str(count) if signal_type in FORMAL_DIVERGENCE_VALUES else ""
             threshold = signal_threshold_label(signal["confirm_rsi"], life_level=life_level)
             text = f"{short_label}{suffix} confirm {threshold}"
             if signal_type in {
-                SignalType.BEARISH_DIVERGENCE.value,
-                SignalType.LOWER_HIGH_WEAK_REBOUND.value,
+                *FORMAL_DIVERGENCE_VALUES,
             }:
                 price_ax.annotate(
                     text,
@@ -154,9 +200,7 @@ def create_annotated_chart(
                     arrowprops={"arrowstyle": "->", "lw": 0.7},
                 )
 
-    divergence = signals.loc[
-        signals["signal_type"] == SignalType.BEARISH_DIVERGENCE.value
-    ]
+    divergence = signals.loc[signals["signal_type"].isin(FORMAL_DIVERGENCE_VALUES)]
     for _, signal in divergence.iterrows():
         if pd.isna(signal["previous_peak_date"]):
             continue
