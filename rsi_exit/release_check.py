@@ -151,6 +151,18 @@ def validate_frozen_baseline(path: str | Path) -> dict[str, object]:
             f"PK0008 version 1 was rewritten by data through {cutoff}",
         )
     version_2 = _formal_row(result.signals, "2026-05-14")
+    old_anchor = _formal_row(result.signals, "2026-04-23")
+    _require(
+        (
+            old_anchor["canonical_peak_id"], int(old_anchor["canonical_version"]),
+            round(float(old_anchor["current_peak_rsi"]), 6),
+        ) == ("PK0007", 2, 84.396377),
+        "2026-04-23 momentum anchor snapshot mismatch",
+    )
+    _require(
+        old_anchor["momentum_anchor_date"] == "2026-04-23",
+        "2026-04-23 momentum anchor date mismatch",
+    )
     _require(
         (full_v1["canonical_peak_id"], int(full_v1["canonical_version"]))
         == ("PK0008", 1),
@@ -167,6 +179,20 @@ def validate_frozen_baseline(path: str | Path) -> dict[str, object]:
         "2026-05-14 same-canonical anchor breakout mismatch",
     )
     _require(not bool(version_2["position_eligible"]), "anchor breakout must be position ineligible")
+    _require(
+        full_v1["price_relation"] == "NON_COMPARABLE_PEAK"
+        and full_v1["momentum_anchor_date"] == "2026-04-23"
+        and full_v1["last_structural_peak_id"] == "PK0007",
+        "2026-04-30 non-comparable lineage mismatch",
+    )
+    _require(
+        version_2["risk_cycle_id"] == full_v1["risk_cycle_id"],
+        "anchor breakout must not reset the risk cycle",
+    )
+    _require(
+        pd.isna(version_2["pending_action_type"]),
+        "anchor breakout must not schedule APPLY_SIGNAL_CAP",
+    )
 
     prefix_columns = [
         "canonical_peak_id", "current_peak_date", "decision_date",
