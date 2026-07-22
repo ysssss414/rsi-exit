@@ -117,11 +117,22 @@ def test_merged_candidate_does_not_emit_or_increment() -> None:
     tracker = DivergenceTracker()
     first = peak(1, 100, 80)
     tracker.process(first)
+    before = (
+        tracker.divergence_count,
+        tracker.last_structural_peak,
+        tracker.anchor,
+        tracker.divergence_chain_id,
+    )
     merged = replace(
         peak(2, 101, 79), is_independent_peak=False, merged_into_peak_id="P0001",
-        canonical_updated=True,
+        canonical_peak_id="P0001", representative_candidate_id="P0002",
+        canonical_updated=True, canonical_version=2,
     )
     result = tracker.process(merged)
-    assert result.signal_type == SignalType.NEW_HIGH_BEARISH_DIVERGENCE
-    assert tracker.divergence_count == 1
-    assert tracker.previous.representative_candidate_id == "P0002"
+    assert result is None
+    assert before == (
+        tracker.divergence_count,
+        tracker.last_structural_peak,
+        tracker.anchor,
+        tracker.divergence_chain_id,
+    )

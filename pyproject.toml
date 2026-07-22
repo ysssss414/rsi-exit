@@ -26,4 +26,7 @@ include = ["rsi_exit*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = '-q -ra -m "not frozen_baseline_required"'
+markers = [
+  "frozen_baseline_required: requires the private SHA-pinned frozen baseline and fails when it is unavailable",
+]

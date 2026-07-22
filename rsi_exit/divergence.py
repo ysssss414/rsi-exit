@@ -177,8 +177,10 @@ class DivergenceTracker:
         self.previous: CanonicalPeak | None = None
         self.last_structural_peak: CanonicalPeak | None = None
         self.anchor: CanonicalPeak | None = None
+        self.latest_confirmed_canonical: CanonicalPeak | None = None
         self.divergence_count = 0
-        self._locked_canonical_ids: set[str] = set()
+        self._evaluated_canonical_versions: set[tuple[str, int]] = set()
+        self._formal_canonical_versions: dict[str, CanonicalPeak] = {}
 
     @property
     def divergence_chain_id(self) -> str:
@@ -197,7 +199,11 @@ class DivergenceTracker:
         self.last_structural_peak = deepcopy(baseline)
         self.anchor = deepcopy(baseline)
         self.divergence_count = 0
-        self._locked_canonical_ids = set()
+        if baseline is not None:
+            key = (baseline.canonical_peak_id, baseline.canonical_version)
+            self._evaluated_canonical_versions.add(key)
+            self._formal_canonical_versions[baseline.canonical_peak_id] = deepcopy(baseline)
+            self.latest_confirmed_canonical = deepcopy(baseline)
 
     def process(
         self,
@@ -210,19 +216,33 @@ class DivergenceTracker:
         canonical = event.canonical
         assert canonical is not None
         current = self._candidate_snapshot(event)
+        version_key = (current.canonical_peak_id, current.canonical_version)
+
+        # Canonical identity is versioned.  Replaying the same immutable
+        # version is always audit-only and cannot mutate formal state.
+        if version_key in self._evaluated_canonical_versions:
+            return None
+        self._evaluated_canonical_versions.add(version_key)
+
+        if event.canonical_updated and not event.canonical_created:
+            return self._process_same_canonical_update(
+                event,
+                current,
+                risk_cycle_id=risk_cycle_id,
+            )
+        if not event.canonical_created:
+            return None
+
+        self._formal_canonical_versions[current.canonical_peak_id] = deepcopy(current)
+        self.latest_confirmed_canonical = deepcopy(current)
 
         if self.last_structural_peak is None:
             self._establish_initial(current)
             return None
 
-        if not event.canonical_created and not event.canonical_updated:
-            return None
-
         assert self.anchor is not None
         previous = deepcopy(self.last_structural_peak)
         anchor_before = deepcopy(self.anchor)
-        self._locked_canonical_ids.add(previous.canonical_peak_id)
-        self._locked_canonical_ids.add(current.canonical_peak_id)
 
         price_relation = classify_price_relation(
             previous, current, price_epsilon=self.price_epsilon
@@ -254,29 +274,6 @@ class DivergenceTracker:
                 local_delta=local_delta,
                 anchor_delta=anchor_delta,
                 structural=False,
-                risk_cycle_id=risk_cycle_id,
-            )
-
-        # Preserve v0.2.1 initial-anchor qualification for an extending
-        # canonical cluster.  This may raise the anchor, but it is not an
-        # anchor-breakout chain reset and never rewrites an emitted result.
-        if event.canonical_updated and current.peak_rsi > anchor_before.peak_rsi:
-            self.anchor = deepcopy(current)
-            self.previous = deepcopy(current)
-            self.last_structural_peak = deepcopy(current)
-            return self._result(
-                candidate_id=candidate.candidate_peak_id or candidate.peak_id,
-                current=current,
-                previous=previous,
-                anchor=current,
-                signal_type=SignalType.STRUCTURAL_PEAK_WITHOUT_DIVERGENCE,
-                price_relation=price_relation,
-                rsi_relation_value=relation,
-                zone_low=zone_low,
-                zone_high=zone_high,
-                local_delta=local_delta,
-                anchor_delta=anchor_delta,
-                structural=True,
                 risk_cycle_id=risk_cycle_id,
             )
 
@@ -352,6 +349,71 @@ class DivergenceTracker:
             structural=True,
             position_eligible=position_eligible,
             risk_cycle_id=risk_cycle_id,
+        )
+
+    def _process_same_canonical_update(
+        self,
+        event: PeakEvent,
+        current: CanonicalPeak,
+        *,
+        risk_cycle_id: str | None,
+    ) -> DivergenceResult | None:
+        """Apply the sole formal exception for a confirmed canonical version."""
+        previous_version = self._formal_canonical_versions.get(current.canonical_peak_id)
+        latest_before = deepcopy(self.latest_confirmed_canonical)
+        if (
+            previous_version is None
+            or latest_before is None
+            or current.canonical_peak_id != latest_before.canonical_peak_id
+            or current.canonical_version <= previous_version.canonical_version
+            or current.peak_date <= previous_version.peak_date
+            or not current.peak_date < current.confirm_date
+        ):
+            return None
+
+        # A causal update advances the latest confirmed lineage even when it
+        # remains audit-only.  It does not by itself alter structural state.
+        self.latest_confirmed_canonical = deepcopy(current)
+        if self.last_structural_peak is None or self.anchor is None:
+            return None
+
+        previous = deepcopy(self.last_structural_peak)
+        anchor_before = deepcopy(self.anchor)
+        price_relation = classify_price_relation(
+            previous, current, price_epsilon=self.price_epsilon
+        )
+        if (
+            price_relation not in STRUCTURAL_RELATIONS
+            or current.peak_rsi
+            < previous_version.peak_rsi + self.anchor_reset_tolerance
+        ):
+            return None
+
+        zone_low, zone_high = comparable_zone(previous)
+        local_delta = current.peak_rsi - previous.peak_rsi
+        anchor_delta = current.peak_rsi - anchor_before.peak_rsi
+        self._formal_canonical_versions[current.canonical_peak_id] = deepcopy(current)
+        self.latest_confirmed_canonical = deepcopy(current)
+        self._close_chain_with(current)
+        candidate = event.peak
+        return self._result(
+            candidate_id=candidate.candidate_peak_id or candidate.peak_id,
+            current=current,
+            previous=previous,
+            anchor=self.anchor or current,
+            signal_type=SignalType.STRUCTURAL_PEAK_WITHOUT_DIVERGENCE,
+            price_relation=price_relation,
+            rsi_relation_value=rsi_relation(
+                local_delta, tolerance=self.divergence_rsi_tolerance
+            ),
+            zone_low=zone_low,
+            zone_high=zone_high,
+            local_delta=local_delta,
+            anchor_delta=anchor_delta,
+            structural=True,
+            reset_reason="ANCHOR_RSI_BREAKOUT",
+            risk_cycle_id=risk_cycle_id,
+            same_canonical_anchor_breakout=True,
         )
 
     def preview_forming(
@@ -484,6 +546,7 @@ class DivergenceTracker:
         reset_reason: str | None = None,
         signal_status: str = "FORMAL",
         risk_cycle_id: str | None = None,
+        same_canonical_anchor_breakout: bool = False,
     ) -> DivergenceResult:
         return DivergenceResult(
             candidate_peak_id=candidate_id,
@@ -529,6 +592,7 @@ class DivergenceTracker:
             close_rejected_from_high_zone=(
                 price_relation == STRICT_NEW_HIGH and current.peak_close < zone_low
             ),
+            same_canonical_anchor_breakout=same_canonical_anchor_breakout,
         )
 
     @staticmethod

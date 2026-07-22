@@ -1,0 +1,5 @@
+candidate_peak_id,canonical_peak_id,canonical_version,peak_index,peak_date,peak_high,peak_close,peak_rsi,previous_day_close,canonical_created,canonical_updated,expected_signal,expected_count
+CP0001,PK0001,1,0,2026-01-02,100,99,80,98,true,false,,0
+CP0002,PK0002,1,4,2026-01-08,101,100,77,99,true,false,NEW_HIGH_BEARISH_DIVERGENCE,1
+CP0003,PK0002,2,6,2026-01-12,102,101,76,100,false,true,,1
+CP0004,PK0003,1,8,2026-01-14,102,100,74,99,true,false,NEW_HIGH_BEARISH_DIVERGENCE,2

@@ -10,7 +10,16 @@ Python 3.10+：
 
 ```powershell
 python -m pip install -e ".[test,amazingdata]"
-python -m pytest -q
+python -m pytest
+```
+
+普通测试会排除强制私有冻结验收；若 ZIP 不在工作区，pytest 会明确显示真实冻结回归
+未执行。发布冻结前必须运行：
+
+```powershell
+python -m rsi_exit.release_check `
+  --frozen-baseline outputs/v0.2.1_baseline/300308.SZ_v0.2.1_frozen_baseline.zip
+python -m pytest -m frozen_baseline_required
 ```
 
 AmazingData 凭据仍由既有 `D:/ej/材料/codex/yh` 项目的环境变量或 `.env.local` 读取；本仓库不保存凭据。
@@ -56,6 +65,9 @@ python -m rsi_exit.cli `
 - 默认候选只要求 `t` 相对 `t-1` 双上升、`t+1` 双下降。三日窗口最大值仅在 `require_recent_window_max=true` 时启用。
 - RSI 恰好下降 1.0 点计为背离；正式背离同时验证相邻结构峰和 momentum anchor。
 - 同日先保存不可变正式快照；risk cycle 与 divergence chain 互不耦合，S3/再入不清背离链。
+- canonical 正式快照以 `(canonical_peak_id, canonical_version)` 为不可变键；同 canonical
+  新版本默认只审计，只有结构合格且较同组上一正式版本 RSI 至少提高 2.0 时，才以无
+  仓位资格的 `ANCHOR_RSI_BREAKOUT` 重建动能锚和背离链。
 - 普通信号上限使用 `APPLY_SIGNAL_CAP`，周期重置使用 `RESET_SIGNAL_DOMAIN`；reset 使旧 cycle 的待生效和已生效信号约束失效，新 cycle 从 signal cap=1.0 开始。
 
 批量 Python 入口必须显式传入展示区间，避免把计算区间首日误当展示首日：
