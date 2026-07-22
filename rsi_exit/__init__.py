@@ -1,6 +1,6 @@
-"""RSI exit signal recognizer v0.2."""
+"""RSI exit signal recognizer v0.2.1."""
 
 from rsi_exit.indicators import calculate_rsi_cn, cn_sma
 
 __all__ = ["calculate_rsi_cn", "cn_sma"]
-__version__ = "0.2.0"
+__version__ = "0.2.1"
