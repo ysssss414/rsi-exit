@@ -92,11 +92,11 @@ def rsi_zone(value: float, *, strong: float = 70, life: float = 60,
     if pd.isna(value):
         return "UNAVAILABLE"
     if value >= strong:
-        return "ABOVE_70"
+        return "ABOVE_STRONG"
     if value >= life:
-        return "60_TO_70"
+        return "LIFE_TO_STRONG"
     if value >= neutral:
-        return "50_TO_60"
+        return "NEUTRAL_TO_LIFE"
     if value >= weak:
-        return "40_TO_50"
-    return "BELOW_40"
+        return "WEAK_TO_NEUTRAL"
+    return "BELOW_WEAK"
