@@ -95,6 +95,20 @@ class AmazingDataAdapter:
     def get_trade_calendar(self) -> list[int]:
         return self._call_with_retry(lambda provider: provider.get_trade_calendar())
 
+    def get_calculation_start_date(self, display_start_date: str, warmup_trading_days: int) -> str:
+        """Resolve the exact Nth prior AmazingData trading day."""
+        display_start = pd.Timestamp(_normalize_date_text(display_start_date))
+        calendar = pd.to_datetime(
+            pd.Series(self.get_trade_calendar()).astype(str), format="%Y%m%d", errors="coerce"
+        ).dropna().sort_values().drop_duplicates()
+        prior = calendar.loc[calendar < display_start]
+        if len(prior) < warmup_trading_days:
+            raise DataSourceError(
+                f"交易日历在 {display_start:%Y-%m-%d} 前仅有 {len(prior)} 日，"
+                f"不足要求的 {warmup_trading_days} 日预热"
+            )
+        return pd.Timestamp(prior.iloc[-warmup_trading_days]).strftime("%Y-%m-%d")
+
     def get_code_info(self) -> pd.DataFrame:
         frame = self._call_with_retry(lambda provider: provider.get_code_info())
         if not isinstance(frame, pd.DataFrame):
@@ -278,6 +292,10 @@ class AmazingDataAdapter:
             raise DataSourceError(f"{symbol} 最新复权因子非法")
         ratio = aligned.to_numpy(dtype=float) / latest_factor
         output = raw.copy()
+        for column in ("open", "high", "low", "close"):
+            output[f"raw_{column}"] = pd.to_numeric(raw[column], errors="raise")
+        output["adjustment_factor"] = aligned.to_numpy(dtype=float)
+        output["adjustment_ratio"] = ratio
         for column in ("open", "high", "low", "close"):
             output[column] = pd.to_numeric(output[column], errors="raise") * ratio
         return output

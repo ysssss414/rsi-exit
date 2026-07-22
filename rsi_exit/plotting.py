@@ -9,6 +9,7 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from rsi_exit.config import RsiExitConfig
 from rsi_exit.models import SignalType
 from rsi_exit.pipeline import AnalysisResult
 
@@ -17,19 +18,28 @@ SIGNAL_STYLE = {
     SignalType.TREND_STRENGTHENING.value: ("^", "TS"),
     SignalType.BEARISH_DIVERGENCE.value: ("v", "DIV"),
     SignalType.LOWER_HIGH_WEAK_REBOUND.value: ("X", "WR"),
+    SignalType.LOWER_PRICE_RSI_FLAT.value: ("D", "FLAT"),
     SignalType.LOWER_PRICE_RSI_IMPROVING.value: ("s", "RI"),
 }
 
 
-def create_annotated_chart(result: AnalysisResult, path: str | Path) -> Path:
+def create_annotated_chart(
+    result: AnalysisResult,
+    path: str | Path,
+    *,
+    config: RsiExitConfig | None = None,
+) -> Path:
     output = Path(path).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     daily = result.daily_features.copy()
     daily["date"] = pd.to_datetime(daily["date"])
-    peaks = result.peaks.copy()
+    peaks = result.canonical_peaks.copy()
     if not peaks.empty:
         peaks["peak_date"] = pd.to_datetime(peaks["peak_date"])
         peaks["confirm_date"] = pd.to_datetime(peaks["confirm_date"])
+        peaks = peaks.loc[
+            peaks["confirm_date"].between(daily["date"].min(), daily["date"].max())
+        ].copy()
     signals = result.signals.copy()
     if not signals.empty:
         signals["signal_date"] = pd.to_datetime(signals["signal_date"])
@@ -47,7 +57,7 @@ def create_annotated_chart(result: AnalysisResult, path: str | Path) -> Path:
     price_ax.plot(daily["date"], daily["ma20"], linestyle="--", linewidth=1.2, label="MA20")
 
     if not peaks.empty:
-        representatives = _effective_representatives(peaks)
+        representatives = peaks
         price_ax.scatter(
             representatives["peak_date"],
             representatives["peak_close"],
@@ -69,7 +79,7 @@ def create_annotated_chart(result: AnalysisResult, path: str | Path) -> Path:
             zorder=4,
         )
         for _, peak in representatives.iterrows():
-            label = str(peak["canonical_peak_id"])
+            label = f"{peak['canonical_peak_id']}@v{int(peak['canonical_version'])}"
             price_ax.annotate(
                 label,
                 (peak["peak_date"], peak["peak_close"]),
@@ -127,20 +137,16 @@ def create_annotated_chart(result: AnalysisResult, path: str | Path) -> Path:
         signals["signal_type"] == SignalType.BEARISH_DIVERGENCE.value
     ]
     for _, signal in divergence.iterrows():
-        current_peak = representatives.loc[
-            representatives["canonical_peak_id"] == signal["peak_id"]
-        ]
-        if current_peak.empty or pd.isna(signal["previous_peak_date"]):
+        if pd.isna(signal["previous_peak_date"]):
             continue
-        current = current_peak.iloc[0]
         price_ax.plot(
-            [signal["previous_peak_date"], current["peak_date"]],
-            [signal["previous_peak_close"], current["peak_close"]],
+            [signal["previous_peak_date"], pd.Timestamp(signal["current_peak_date"])],
+            [signal["previous_peak_close"], signal["current_peak_close"]],
             linestyle=":", linewidth=1.1,
         )
         rsi_ax.plot(
-            [signal["previous_peak_date"], current["peak_date"]],
-            [signal["previous_peak_rsi"], current["peak_rsi"]],
+            [signal["previous_peak_date"], pd.Timestamp(signal["current_peak_date"])],
+            [signal["previous_peak_rsi"], signal["current_peak_rsi"]],
             linestyle=":", linewidth=1.1,
         )
 
@@ -156,13 +162,17 @@ def create_annotated_chart(result: AnalysisResult, path: str | Path) -> Path:
             label="Momentum anchor", zorder=6,
         )
 
-    rsi_ax.plot(daily["date"], daily["rsi14"], linewidth=1.4, label="RSI14 (CN SMA)")
-    for level, style in ((70, "--"), (60, "-."), (50, ":"), (40, ":")):
+    rsi_period = int(result.metadata["rsi_period"])
+    rsi_ax.plot(daily["date"], daily["rsi14"], linewidth=1.4, label=f"RSI{rsi_period} (CN SMA)")
+    configured_lines = config.values["chart"]["rsi_lines"] if config is not None else [70, 60, 50, 40]
+    styles = ("--", "-.", ":", ":")
+    for index, level in enumerate(configured_lines):
+        style = styles[index % len(styles)]
         rsi_ax.axhline(level, linestyle=style, linewidth=0.9, label=f"RSI {level}")
     rsi_ax.set_ylim(0, 105)
-    rsi_ax.set_ylabel("RSI14")
+    rsi_ax.set_ylabel(f"RSI{rsi_period}")
     price_ax.set_ylabel("Forward-adjusted price")
-    price_ax.set_title(f"{result.symbol} RSI Exit Signal Recognizer v0.1")
+    price_ax.set_title(f"{result.symbol} RSI Exit Signal Recognizer v0.2")
     price_ax.grid(alpha=0.22)
     rsi_ax.grid(alpha=0.22)
     price_ax.legend(loc="best", fontsize=8, ncol=2)

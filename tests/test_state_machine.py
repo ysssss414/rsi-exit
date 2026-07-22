@@ -46,13 +46,16 @@ def test_s3_repairs_to_s4() -> None:
     assert step(machine, 65, close=110, ma20=100).current_state == BaseState.S4_REPAIR_WATCH
 
 
-def test_s4_restrengthens_to_s5() -> None:
+def test_s4_restrengthening_is_one_event_then_s0() -> None:
     machine = RsiExitStateMachine()
     step(machine, 49)
     step(machine, 65)
     transition = step(machine, 72)
-    assert transition.current_state == BaseState.S5_RESTRENGTHEN
+    assert transition.current_state == BaseState.S0_MAIN_TREND
     assert transition.action == "ALLOW_REENTRY"
+    assert transition.state_event == "ALLOW_REENTRY"
+    assert transition.allow_reentry
+    assert step(machine, 65).current_state == BaseState.S1_STRONG_PULLBACK
 
 
 def test_external_risk_and_ma20_break_downgrades() -> None:
@@ -67,4 +70,3 @@ def test_final_cap_is_smaller_of_base_and_signal() -> None:
     )
     assert action == "REDUCE"
     assert cap == 0.5
-

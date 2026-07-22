@@ -1,36 +1,8 @@
-# RSI卖点信号识别器 v0.1
+# RSI卖点信号识别器 v0.2
 
-本目录实现“趋势股RSI卖点与持仓去偏系统”的第一阶段：日线级 RSI14、高点确认、顶部背离/连续背离/弱反弹、六状态机、目标仓位上限、结构化 CSV、Markdown 摘要和标记图。策略只生成风险约束，不自动交易。
+面向 A 股日线趋势股的 RSI 卖点与持仓去偏系统。它生成可审计的风险约束，不读取成本、盈亏或持仓时间，不自动下单。
 
-实现沿用现有 `D:/ej/材料/codex/db/trading_review_system` 与 `D:/ej/材料/codex/yh` 的约定：
-
-- 复用 `yh_quant_shape.data_provider.AmazingDataProvider` 的登录、交易日历、代码信息和 `MarketData.query_kline`；
-- 凭据继续由旧项目 `.env.local` 或 `AMAZINGDATA_*` 环境变量读取，不复制、不硬编码；
-- 复权因子使用手册确认的 `BaseData.get_backward_factor`；
-- 配置继续采用 JSON-compatible YAML，CSV 采用 UTF-8-SIG；
-- AmazingData 1.1.6 延迟导入，避免核心算法测试依赖 SDK。
-
-## 目录
-
-```text
-rsi_exit/
-  cli.py                  命令行入口
-  config.py               配置读取和校验
-  indicators.py           国内公式 CN-SMA 与 RSI14
-  peak_detector.py        候选、确认、独立波段与同波段合并
-  divergence.py           四类峰值关系、连续背离与动能锚
-  state_machine.py        S0-S5 基础状态机
-  position_rules.py       目标仓位上限与取严合并
-  pipeline.py             无未来逐日流水线和批量摘要
-  plotting.py             双栏人工核验图
-  reporting.py            CSV、summary 和批量汇总
-  data/
-    amazingdata_adapter.py 统一数据入口
-    cache.py               原始日K缓存
-config/rsi_exit_v01.yaml
-docs/rsi_exit_v01.md
-tests/
-```
+v0.2 修复了四类阻断问题：退出修复状态、至少 120 个真实交易日预热、候选峰/规范峰身份链，以及决策日与生效日混用。AmazingData 仍是唯一在线行情源。
 
 ## 安装与测试
 
@@ -41,11 +13,9 @@ python -m pip install -e ".[test,amazingdata]"
 python -m pytest -q
 ```
 
-`amazingdata` 可选依赖用于 SDK 的 Pydantic v2 日K转换和 HDF5 复权因子缓存。AmazingData SDK 本身继续使用现有安装，不由本项目重新分发。
+AmazingData 凭据仍由既有 `D:/ej/材料/codex/yh` 项目的环境变量或 `.env.local` 读取；本仓库不保存凭据。
 
-## 中际旭创运行
-
-现有代码信息真实样本已确认：中际旭创为 `300308.SZ`。
+## 中际旭创回归
 
 ```powershell
 python -m rsi_exit.cli `
@@ -57,37 +27,34 @@ python -m rsi_exit.cli `
   --plot
 ```
 
-首次在线请求会把原始日 K 缓存在 `cache/amazingdata/raw/`；复权因子由 SDK 缓存在 `cache/amazingdata/factors/`。重复运行不加 `--force-refresh`。
+在线入口先通过 AmazingData 交易日历定位展示日前第 120 个真实交易日，在完整前复权序列上计算 MA、RSI、峰值和状态，最后才裁剪 `daily_features.csv`。离线入口必须传入包含足量前置历史的原始标准日 K CSV；传入已裁剪的展示 CSV 会明确报错。
 
-已验证 CSV 的离线复核入口：
+若需用已归档的 v0.1 输出生成 old/new 对照，可增加：
 
 ```powershell
-python -m rsi_exit.cli `
-  --symbol 300308.SZ `
-  --name 中际旭创 `
-  --start 2026-02-01 `
-  --end 2026-07-20 `
-  --adjust forward `
-  --input-csv outputs/rsi_exit/300308.SZ/daily_features.csv `
-  --plot
+--comparison-baseline-dir outputs/rsi_exit_v01_baseline/300308.SZ
 ```
 
 ## 输出
 
-默认目录为 `outputs/rsi_exit/<symbol>/`：
+单股目录 `outputs/rsi_exit/<symbol>/`：
 
-- `daily_features.csv`
-- `peaks.csv`
-- `signals.csv`
-- `state_log.csv`
-- `summary.md`
-- `annotated_chart.png`（传入 `--plot`）
-- `outputs/rsi_exit/peak_validation_summary.csv`（单股一行，批量时多行）
+- `daily_features.csv`：同列输出 decision 与 effective 状态、动作和仓位上限；
+- `peaks.csv`：每个不可变候选峰及其 canonical、版本、周期和展示标志；
+- `canonical_peaks.csv`：每个 canonical 的当前代表候选；
+- `signals.csv`：形成当时的 current/previous canonical 版本快照、动能锚和生效日；
+- `state_log.csv`、`cycle_log.csv`：状态和周期重置审计；
+- `rsi_audit.csv`：原始/复权价格、因子、递推分子分母、预热标志和校验和；
+- `summary.md`、`regression_comparison.md`、`annotated_chart.png`。
 
-批量代码入口为 `rsi_exit.pipeline.run_batch`，汇总输出函数为 `rsi_exit.reporting.write_batch_summary`，字段契约包含在 `peak_validation_summary.csv` 中。第二批股票名称应先通过 `AmazingDataAdapter.resolve_symbol()` 查询基础信息，不在代码中手填证券代码。
+根输出目录另有 `peak_validation_summary.csv`。
 
-## 当前中际旭创验收
+## 关键语义
 
-在线 AmazingData 返回 2026-02-02 至 2026-07-20 共 110 个交易日。默认参数得到：14 个独立波段高点、2 次顶部背离、3 次弱反弹；一次/二次背离确认日为 2026-05-29、2026-06-05。区间盘中最高价 1416.88 出现在 2026-06-22，同日收盘高点被识别为 P0015，2026-06-23 确认，2026-06-24 才允许执行。详细解释见生成的 `summary.md`。
+- 峰值 `t` 只在 `t+1` 双下降后确认，最早 `t+2` 生效；基础状态也只在下一真实交易日生效。
+- S3/S4 中 RSI≥strong 且收盘高于 MA 时产生一次 `ALLOW_REENTRY`，基础状态回到 S0；S5 仅保留枚举兼容，不驻留。
+- 默认候选只要求 `t` 相对 `t-1` 双上升、`t+1` 双下降。三日窗口最大值仅在 `require_recent_window_max=true` 时启用。
+- RSI 恰好下降配置容差计为背离；低价且 RSI 容差内持平归为 `LOWER_PRICE_RSI_FLAT`。
+- 同日先保存峰值关系，再执行只影响未来的周期重置。全局同波段合并和局部背离周期互不耦合。
 
-规则歧义、无未来约束、状态机保守解释与已知限制见 [v0.1 技术说明](docs/rsi_exit_v01.md)。
+详细口径见 [v0.2 技术说明](docs/rsi_exit_v02.md)。[v0.1 技术说明](docs/rsi_exit_v01.md) 保留为历史基线。

@@ -7,11 +7,14 @@ import pandas as pd
 
 
 class BaseState(str, Enum):
+    UNINITIALIZED = "UNINITIALIZED"
     S0_MAIN_TREND = "S0_MAIN_TREND"
     S1_STRONG_PULLBACK = "S1_STRONG_PULLBACK"
     S2_RISK_DOWNGRADE = "S2_RISK_DOWNGRADE"
     S3_EXIT = "S3_EXIT"
     S4_REPAIR_WATCH = "S4_REPAIR_WATCH"
+    # Kept only so v0.1 readers do not fail on historical CSV values.  v0.2
+    # never transitions into this state: re-entry qualification is an event.
     S5_RESTRENGTHEN = "S5_RESTRENGTHEN"
 
 
@@ -19,11 +22,18 @@ class SignalType(str, Enum):
     TREND_STRENGTHENING = "TREND_STRENGTHENING"
     BEARISH_DIVERGENCE = "BEARISH_DIVERGENCE"
     LOWER_HIGH_WEAK_REBOUND = "LOWER_HIGH_WEAK_REBOUND"
+    LOWER_PRICE_RSI_FLAT = "LOWER_PRICE_RSI_FLAT"
     LOWER_PRICE_RSI_IMPROVING = "LOWER_PRICE_RSI_IMPROVING"
 
 
 @dataclass
 class Peak:
+    """One immutable confirmed candidate.
+
+    ``peak_id`` is a v0.1 compatibility alias for ``candidate_peak_id``.  All
+    v0.2 relationships use the explicit candidate/canonical fields.
+    """
+
     peak_id: str
     peak_index: int
     peak_date: pd.Timestamp
@@ -44,33 +54,100 @@ class Peak:
     previous_peak_id: str | None
     momentum_anchor_peak_id: str | None = None
     canonical_updated: bool = False
+    candidate_peak_id: str | None = None
+    canonical_peak_id: str | None = None
+    representative_candidate_id: str | None = None
+    canonical_version: int = 1
+    previous_candidate_peak_id: str | None = None
+    previous_canonical_peak_id: str | None = None
+    cycle_id: str | None = None
+    is_warmup: bool = False
+    is_display_range: bool = True
+
+    def __post_init__(self) -> None:
+        if self.candidate_peak_id is None:
+            self.candidate_peak_id = self.peak_id
+        if self.canonical_peak_id is None:
+            self.canonical_peak_id = self.merged_into_peak_id or self.peak_id
+        if self.representative_candidate_id is None:
+            self.representative_candidate_id = self.candidate_peak_id
+
+
+@dataclass
+class CanonicalPeak:
+    canonical_peak_id: str
+    representative_candidate_id: str
+    canonical_version: int
+    peak_index: int
+    peak_date: pd.Timestamp
+    confirm_index: int
+    confirm_date: pd.Timestamp
+    earliest_action_date: pd.Timestamp | pd.NaT
+    peak_close: float
+    peak_rsi: float
+    confirm_close: float
+    confirm_rsi: float
+    days_from_previous_peak: int | None
+    interim_min_close: float | None
+    interim_min_rsi: float | None
+    price_retrace_pct: float | None
+    rsi_retrace: float | None
+    previous_canonical_peak_id: str | None
+    cycle_id: str | None = None
+
+    @property
+    def peak_id(self) -> str:
+        """v0.1 read-only compatibility alias."""
+        return self.canonical_peak_id
 
 
 @dataclass
 class PeakEvent:
-    """Canonical independent swing peak available only on confirm_date."""
+    """Candidate and the canonical snapshot known on its confirmation date."""
 
     peak: Peak
+    canonical: CanonicalPeak | None = None
+    canonical_created: bool = False
+    canonical_updated: bool = False
 
 
 @dataclass
 class DivergenceResult:
-    peak_id: str
-    previous_peak_id: str
+    candidate_peak_id: str
+    canonical_peak_id: str
+    canonical_version: int
+    previous_candidate_peak_id: str
+    previous_canonical_peak_id: str
+    previous_canonical_version: int
     signal_type: SignalType
     price_relation: str
     rsi_relation: str
     divergence_count: int
-    momentum_anchor_peak_id: str
+    momentum_anchor_candidate_id: str
+    momentum_anchor_canonical_id: str
+    momentum_anchor_canonical_version: int
     momentum_anchor_date: pd.Timestamp
     momentum_anchor_close: float
     momentum_anchor_rsi: float
     price_vs_anchor_pct: float
     rsi_vs_anchor: float
+    cycle_id: str
     reset_reason: str | None = None
     previous_peak_date: pd.Timestamp | None = None
     previous_peak_close: float | None = None
     previous_peak_rsi: float | None = None
+
+    @property
+    def peak_id(self) -> str:
+        return self.candidate_peak_id
+
+    @property
+    def previous_peak_id(self) -> str:
+        return self.previous_candidate_peak_id
+
+    @property
+    def momentum_anchor_peak_id(self) -> str:
+        return self.momentum_anchor_candidate_id
 
 
 @dataclass
@@ -80,3 +157,6 @@ class StateTransition:
     trigger: str
     action: str
     position_cap: float
+    state_event: str | None = None
+    allow_reentry: bool = False
+    reentry_qualification_date: pd.Timestamp | None = None

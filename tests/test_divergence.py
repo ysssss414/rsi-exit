@@ -36,7 +36,8 @@ def peak(
         (101.0, 78.0, SignalType.BEARISH_DIVERGENCE),
         (99.5, 78.0, SignalType.BEARISH_DIVERGENCE),
         (99.49, 78.0, SignalType.LOWER_HIGH_WEAK_REBOUND),
-        (99.49, 80.0, SignalType.LOWER_PRICE_RSI_IMPROVING),
+        (99.49, 80.0, SignalType.LOWER_PRICE_RSI_FLAT),
+        (99.49, 81.0, SignalType.LOWER_PRICE_RSI_IMPROVING),
     ],
 )
 def test_four_way_classification(current_close: float, current_rsi: float, expected: SignalType) -> None:
@@ -46,10 +47,10 @@ def test_four_way_classification(current_close: float, current_rsi: float, expec
     assert actual == expected
 
 
-def test_rsi_exact_lower_tolerance_boundary_does_not_report_divergence() -> None:
+def test_rsi_exact_lower_tolerance_boundary_reports_divergence() -> None:
     actual, _, relation = classify_peak_pair(peak(1, 100, 80), peak(2, 100, 79))
-    assert actual == SignalType.TREND_STRENGTHENING
-    assert relation == "RSI_FLAT_WITHIN_TOLERANCE"
+    assert actual == SignalType.BEARISH_DIVERGENCE
+    assert relation == "RSI_LOWER"
 
 
 def test_price_exact_tolerance_boundary_is_near_high() -> None:
@@ -112,4 +113,3 @@ def test_merged_candidate_does_not_emit_or_increment() -> None:
     assert tracker.process(merged) is None
     assert tracker.divergence_count == 0
     assert tracker.previous.peak_id == "P0001"
-

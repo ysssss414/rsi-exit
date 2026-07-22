@@ -14,13 +14,17 @@ from rsi_exit.reporting import write_batch_summary, write_outputs
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="RSI卖点信号识别器 v0.1")
+    parser = argparse.ArgumentParser(description="RSI卖点信号识别器 v0.2")
     parser.add_argument("--symbol", required=True, help="AmazingData代码，例如 300308.SZ")
     parser.add_argument("--name", default=None, help="可选名称；在线模式默认由代码信息接口确认")
     parser.add_argument("--start", required=True, help="YYYY-MM-DD")
     parser.add_argument("--end", required=True, help="YYYY-MM-DD")
     parser.add_argument("--adjust", default="forward", choices=["forward", "none", "raw"])
     parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument(
+        "--comparison-baseline-dir", type=Path, default=None,
+        help="可选v0.1输出目录，用于生成old/new回归对照",
+    )
     parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--seed-mode", choices=["first", "mean"], default=None)
     parser.add_argument("--price-tolerance", type=float, default=None)
@@ -51,9 +55,13 @@ def main(argv: list[str] | None = None) -> int:
     output_root = args.output_dir or _project_path(
         project_root, config.values["output"]["root"]
     )
+    warmup_days = int(config.values["data"]["warmup_trading_days"])
 
     if args.input_csv is not None:
-        bars = _read_input_csv(args.input_csv, args.symbol, args.start, args.end)
+        bars = _read_input_csv(
+            args.input_csv, args.symbol, args.start, args.end,
+            required_warmup=warmup_days,
+        )
         bars.attrs.update(source="AmazingData verified CSV", adjust=args.adjust)
         name = args.name
     else:
@@ -72,9 +80,10 @@ def main(argv: list[str] | None = None) -> int:
             if symbol.upper() != args.symbol.upper():
                 raise ValueError(f"代码信息接口返回不一致: {symbol} != {args.symbol}")
             name = resolved_name
+        calculation_start = adapter.get_calculation_start_date(args.start, warmup_days)
         bars = adapter.get_daily_bars(
             symbol,
-            args.start,
+            calculation_start,
             args.end,
             args.adjust,
             force_refresh=args.force_refresh,
@@ -85,12 +94,15 @@ def main(argv: list[str] | None = None) -> int:
         symbol=args.symbol.upper(),
         name=name,
         config=config,
+        display_start_date=args.start,
+        display_end_date=args.end,
     )
     output_dir = write_outputs(
         result,
         config=config,
         output_root=output_root,
         plot=args.plot,
+        comparison_baseline_dir=args.comparison_baseline_dir,
     )
     write_batch_summary(build_validation_summary([result]), output_root)
     logging.getLogger(__name__).info("RSI exit outputs written to %s", output_dir)
@@ -117,14 +129,28 @@ def _with_overrides(config: RsiExitConfig, args: argparse.Namespace) -> RsiExitC
     return RsiExitConfig(values=values, source_path=config.source_path)
 
 
-def _read_input_csv(path: Path, symbol: str, start: str, end: str) -> pd.DataFrame:
+def _read_input_csv(
+    path: Path,
+    symbol: str,
+    start: str,
+    end: str,
+    *,
+    required_warmup: int,
+) -> pd.DataFrame:
     frame = pd.read_csv(path, encoding="utf-8-sig")
     if "code" in frame.columns:
         frame = frame.loc[frame["code"].astype(str).str.upper() == symbol.upper()].copy()
     dates = pd.to_datetime(frame["date"].astype(str), errors="coerce")
-    start_date = pd.Timestamp(start)
     end_date = pd.Timestamp(end)
-    return frame.loc[dates.between(start_date, end_date)].reset_index(drop=True)
+    frame = frame.loc[dates <= end_date].copy()
+    dates = pd.to_datetime(frame["date"].astype(str), errors="coerce")
+    actual_warmup = int((dates < pd.Timestamp(start)).sum())
+    if actual_warmup < required_warmup:
+        raise ValueError(
+            f"离线CSV在展示起始日前仅有 {actual_warmup} 个交易日，"
+            f"不足配置要求的 {required_warmup} 日；请传入未提前裁剪的完整行情CSV。"
+        )
+    return frame.reset_index(drop=True)
 
 
 def _project_path(project_root: Path, value: str | Path) -> Path:
