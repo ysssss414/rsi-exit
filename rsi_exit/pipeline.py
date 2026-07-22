@@ -47,11 +47,109 @@ SIGNAL_COLUMNS = [
     "momentum_anchor_canonical_version", "momentum_anchor_date",
     "momentum_anchor_close", "momentum_anchor_rsi", "price_vs_anchor_pct",
     "rsi_vs_anchor", "reset_reason", "reason",
+    "pending_action_type", "invalidated_by_cycle_reset",
+    "invalidated_on_date", "invalidated_effective_date",
+    "is_warmup", "is_display_range",
     # v0.1 compatibility aliases, deliberately tied to candidate identities.
     "peak_id", "previous_peak_id", "previous_peak_date", "previous_peak_close",
     "previous_peak_rsi", "base_state", "base_position_cap", "final_position_cap",
     "final_action",
 ]
+
+
+APPLY_SIGNAL_CAP = "APPLY_SIGNAL_CAP"
+RESET_SIGNAL_DOMAIN = "RESET_SIGNAL_DOMAIN"
+
+
+class SignalCapQueue:
+    """Cycle-aware pending queue for the independent signal-cap domain."""
+
+    def __init__(self, cycle_id: str) -> None:
+        self.pending: dict[pd.Timestamp, list[dict[str, Any]]] = {}
+        self.invalidated_cycles: set[str] = set()
+        self.effective_cap = 1.0
+        self.effective_action = "NO_DIVERGENCE_REDUCTION"
+        self.effective_cycle_id = cycle_id
+        self.effective_source: dict[str, Any] | None = None
+
+    def schedule_cap(
+        self,
+        effective_date: pd.Timestamp | pd.NaT,
+        *,
+        cycle_id: str,
+        cap: float,
+        action: str,
+        source: dict[str, Any] | None = None,
+    ) -> None:
+        if pd.isna(effective_date) or cycle_id in self.invalidated_cycles:
+            return
+        self.pending.setdefault(pd.Timestamp(effective_date), []).append({
+            "action_type": APPLY_SIGNAL_CAP,
+            "cycle_id": cycle_id,
+            "cap": float(cap),
+            "action": action,
+            "source": deepcopy(source),
+        })
+
+    def schedule_reset(
+        self,
+        effective_date: pd.Timestamp | pd.NaT,
+        *,
+        old_cycle_id: str,
+        new_cycle_id: str,
+    ) -> None:
+        self.invalidated_cycles.add(old_cycle_id)
+        for date in list(self.pending):
+            retained = [
+                entry for entry in self.pending[date]
+                if not (
+                    entry["action_type"] == APPLY_SIGNAL_CAP
+                    and entry["cycle_id"] == old_cycle_id
+                )
+            ]
+            if retained:
+                self.pending[date] = retained
+            else:
+                del self.pending[date]
+        if pd.isna(effective_date):
+            return
+        self.pending.setdefault(pd.Timestamp(effective_date), []).append({
+            "action_type": RESET_SIGNAL_DOMAIN,
+            "cycle_id": old_cycle_id,
+            "new_cycle_id": new_cycle_id,
+        })
+
+    def apply_due(self, date: pd.Timestamp) -> None:
+        entries = self.pending.pop(pd.Timestamp(date), [])
+        resets = [entry for entry in entries if entry["action_type"] == RESET_SIGNAL_DOMAIN]
+        if resets:
+            reset = resets[-1]
+            self.effective_cap = 1.0
+            self.effective_action = RESET_SIGNAL_DOMAIN
+            self.effective_cycle_id = str(reset["new_cycle_id"])
+            self.effective_source = None
+
+        applicable = [
+            entry for entry in entries
+            if entry["action_type"] == APPLY_SIGNAL_CAP
+            and entry["cycle_id"] == self.effective_cycle_id
+            and entry["cycle_id"] not in self.invalidated_cycles
+        ]
+        if applicable:
+            candidates = applicable
+            if self.effective_cycle_id == applicable[0]["cycle_id"]:
+                candidates = [
+                    *applicable,
+                    {
+                        "cap": self.effective_cap,
+                        "action": self.effective_action,
+                        "source": self.effective_source,
+                    },
+                ]
+            chosen = min(candidates, key=lambda entry: float(entry["cap"]))
+            self.effective_cap = float(chosen["cap"])
+            self.effective_action = str(chosen["action"])
+            self.effective_source = deepcopy(chosen.get("source"))
 
 
 def analyze_bars(
@@ -83,11 +181,12 @@ def analyze_bars(
     period, seed_mode = int(rsi_cfg["period"]), str(rsi_cfg["seed_mode"])
     ma_period = int(data_cfg["ma_period"])
     audit_values = calculate_rsi_audit(data["close"], period=period, seed_mode=seed_mode)
-    data[f"ma{ma_period}"] = data["close"].rolling(ma_period, min_periods=ma_period).mean()
-    data["ma20"] = data[f"ma{ma_period}"]
-    data[f"rsi{period}"] = audit_values["rsi"]
-    data["rsi14"] = audit_values["rsi"]
-    data["rsi_zone"] = data["rsi14"].map(lambda value: rsi_zone(value, **{k: float(levels[k]) for k in ("strong", "life", "neutral", "weak")}))
+    ma_column, rsi_column = f"ma{ma_period}", f"rsi{period}"
+    data["ma"] = data["close"].rolling(ma_period, min_periods=ma_period).mean()
+    data[ma_column] = data["ma"]
+    data["rsi"] = audit_values["rsi"]
+    data[rsi_column] = data["rsi"]
+    data["rsi_zone"] = data["rsi"].map(lambda value: rsi_zone(value, **{k: float(levels[k]) for k in ("strong", "life", "neutral", "weak")}))
 
     detector = PeakDetector(
         lookback=int(peak_cfg["lookback"]),
@@ -97,7 +196,9 @@ def analyze_bars(
         min_price_retrace_pct=float(peak_cfg["min_price_retrace_pct"]),
         price_tolerance_pct=float(div_cfg["price_tolerance_pct"]),
     )
-    peaks, peak_events = detector.detect(data, trading_calendar=data["date"])
+    detector_data = data.copy()
+    detector_data["rsi14"] = data["rsi"]
+    peaks, peak_events = detector.detect(detector_data, trading_calendar=data["date"])
     canonical_peaks = detector.canonical_peaks_frame()
     tracker = DivergenceTracker(
         price_tolerance_pct=float(div_cfg["price_tolerance_pct"]),
@@ -111,12 +212,11 @@ def analyze_bars(
     )
 
     dates = data["date"].tolist()
-    pending: dict[pd.Timestamp, list[dict[str, Any]]] = {}
+    base_pending: dict[pd.Timestamp, list[dict[str, Any]]] = {}
     effective_base_state = BaseState.UNINITIALIZED
     effective_base_cap = float(caps["uninitialized"])
     effective_base_action = "WAIT_FOR_WARMUP"
-    effective_signal_cap = 1.0
-    effective_signal_action = "NO_DIVERGENCE_REDUCTION"
+    signal_queue = SignalCapQueue(tracker.cycle_id)
     decision_signal_cap = 1.0
     decision_signal_action = "NO_DIVERGENCE_REDUCTION"
     current_divergence_count = 0
@@ -129,28 +229,23 @@ def analyze_bars(
     candidate_cycle: dict[str, str] = {}
     anchor_by_candidate: dict[str, str] = {}
 
-    def add_pending(date: pd.Timestamp | pd.NaT, entry: dict[str, Any]) -> None:
+    def add_base_pending(date: pd.Timestamp | pd.NaT, entry: dict[str, Any]) -> None:
         if pd.isna(date):
             return
-        pending.setdefault(pd.Timestamp(date), []).append(entry)
+        base_pending.setdefault(pd.Timestamp(date), []).append(entry)
 
     for row_index, row in data.iterrows():
         date = pd.Timestamp(row["date"])
-        due_entries = pending.pop(date, [])
-        for domain in ("base", "signal"):
-            entries = [item for item in due_entries if item["domain"] == domain]
-            if entries:
-                chosen = min(entries, key=lambda item: float(item["cap"]))
-                if domain == "base":
-                    effective_base_cap = float(chosen["cap"])
-                    effective_base_action = str(chosen["action"])
-                    effective_base_state = chosen["state"]
-                else:
-                    effective_signal_cap = float(chosen["cap"])
-                    effective_signal_action = str(chosen["action"])
+        due_entries = base_pending.pop(date, [])
+        if due_entries:
+            chosen = min(due_entries, key=lambda item: float(item["cap"]))
+            effective_base_cap = float(chosen["cap"])
+            effective_base_action = str(chosen["action"])
+            effective_base_state = chosen["state"]
+        signal_queue.apply_due(date)
 
         transition = machine.step(
-            rsi=float(row["rsi14"]), close=float(row["close"]), ma20=float(row["ma20"]),
+            rsi=float(row["rsi"]), close=float(row["close"]), ma20=float(row["ma"]),
             external_risk=_binary_input(row.get("external_risk", 0)),
             hard_exit=_binary_input(row.get("hard_exit", 0)), decision_date=date,
         )
@@ -179,15 +274,18 @@ def analyze_bars(
                 life_level=float(levels["life"]), position_caps=caps,
             )
             before_signal_cap = decision_signal_cap
+            pending_action_type: str | None = None
             if result.reset_reason:
                 decision_signal_cap = 1.0
-                decision_signal_action = "RESET_DIVERGENCE_CAP"
+                decision_signal_action = RESET_SIGNAL_DOMAIN
                 reset_reasons.append(result.reset_reason)
                 reset_baseline = deepcopy(event.canonical)
             elif result.signal_type in {SignalType.BEARISH_DIVERGENCE, SignalType.LOWER_HIGH_WEAK_REBOUND}:
                 if raw_signal_cap <= decision_signal_cap:
                     decision_signal_action = signal_action
                 decision_signal_cap = min(decision_signal_cap, raw_signal_cap)
+                if decision_signal_cap != before_signal_cap:
+                    pending_action_type = APPLY_SIGNAL_CAP
 
             if result.signal_type == SignalType.BEARISH_DIVERGENCE and result.divergence_count >= 3 and result.reset_reason is None:
                 transition = machine.force_exit("THIRD_DIVERGENCE")
@@ -197,11 +295,6 @@ def analyze_bars(
                 reset_baseline = None
 
             action_date = event.peak.earliest_action_date
-            if decision_signal_cap != before_signal_cap or result.reset_reason:
-                add_pending(action_date, {
-                    "domain": "signal", "cap": decision_signal_cap,
-                    "action": decision_signal_action,
-                })
             decision_action, decision_final_cap = merge_position_caps(
                 base_action=transition.action, base_cap=transition.position_cap,
                 signal_action=decision_signal_action, signal_cap=decision_signal_cap,
@@ -214,7 +307,7 @@ def analyze_bars(
             if result.reset_reason:
                 reason_parts.append(f"cycle reset after audit: {result.reset_reason}")
             reason = "; ".join(reason_parts)
-            signals.append({
+            signal_record = {
                 "decision_date": _date_text(date), "earliest_action_date": _date_text(action_date),
                 "effective_date": _date_text(action_date), "signal_date": _date_text(date),
                 "candidate_peak_id": candidate_id, "canonical_peak_id": result.canonical_peak_id,
@@ -247,12 +340,35 @@ def analyze_bars(
                 "momentum_anchor_rsi": result.momentum_anchor_rsi,
                 "price_vs_anchor_pct": result.price_vs_anchor_pct, "rsi_vs_anchor": result.rsi_vs_anchor,
                 "reset_reason": result.reset_reason, "reason": reason,
+                "pending_action_type": pending_action_type,
+                "invalidated_by_cycle_reset": False,
+                "invalidated_on_date": None,
+                "invalidated_effective_date": None,
+                "is_warmup": date < display_start,
+                "is_display_range": display_start <= date <= display_end,
                 "peak_id": candidate_id, "previous_peak_id": result.previous_candidate_peak_id,
                 "previous_peak_date": _date_text(result.previous_peak_date),
                 "previous_peak_close": result.previous_peak_close, "previous_peak_rsi": result.previous_peak_rsi,
                 "base_state": transition.current_state.value, "base_position_cap": transition.position_cap,
                 "final_position_cap": decision_final_cap, "final_action": decision_action,
-            })
+            }
+            signals.append(signal_record)
+            if pending_action_type == APPLY_SIGNAL_CAP:
+                signal_queue.schedule_cap(
+                    action_date,
+                    cycle_id=result.cycle_id,
+                    cap=decision_signal_cap,
+                    action=decision_signal_action,
+                    source={
+                        "decision_date": _date_text(date),
+                        "effective_date": _date_text(action_date),
+                        "candidate_peak_id": candidate_id,
+                        "canonical_peak_id": result.canonical_peak_id,
+                        "cycle_id": result.cycle_id,
+                        "original_cap": raw_signal_cap,
+                        "is_warmup": date < display_start,
+                    },
+                )
             day_signal_type, day_reason = result.signal_type.value, reason
 
         if entered_s3 and "STATE_ENTERED_S3" not in reset_reasons:
@@ -260,22 +376,56 @@ def analyze_bars(
             reset_baseline = None
 
         next_date = pd.Timestamp(dates[row_index + 1]) if row_index + 1 < len(dates) else pd.NaT
-        add_pending(next_date, {
-            "domain": "base", "cap": transition.position_cap,
+        add_base_pending(next_date, {
+            "cap": transition.position_cap,
             "action": transition.action, "state": transition.current_state,
         })
 
+        new_cycle_id: str | None = None
+        if reset_reasons:
+            reason = "|".join(dict.fromkeys(reset_reasons))
+            old_cycle_id = tracker.cycle_id
+            cycle_seq += 1
+            new_cycle_id = f"CYCLE{cycle_seq:04d}"
+            signal_queue.schedule_reset(
+                next_date, old_cycle_id=old_cycle_id, new_cycle_id=new_cycle_id
+            )
+            for signal in signals:
+                if (
+                    signal["cycle_id"] == old_cycle_id
+                    and signal["pending_action_type"] == APPLY_SIGNAL_CAP
+                    and not signal["invalidated_by_cycle_reset"]
+                ):
+                    signal["invalidated_by_cycle_reset"] = True
+                    signal["invalidated_on_date"] = _date_text(date)
+                    signal["invalidated_effective_date"] = _date_text(next_date)
+            decision_signal_cap = 1.0
+            decision_signal_action = RESET_SIGNAL_DOMAIN
+            current_divergence_count = 0
+            cycle_rows.append({
+                "cycle_id": old_cycle_id,
+                "new_cycle_id": new_cycle_id,
+                "cycle_start_date": _date_text(cycle_start),
+                "cycle_end_date": _date_text(date), "reset_reason": reason,
+                "reset_decision_date": _date_text(date), "reset_effective_date": _date_text(next_date),
+                "signal_domain_action_type": RESET_SIGNAL_DOMAIN,
+                "cycle_reset_event": True,
+            })
+
         effective_action, effective_final_cap = merge_position_caps(
             base_action=effective_base_action, base_cap=effective_base_cap,
-            signal_action=effective_signal_action, signal_cap=effective_signal_cap,
+            signal_action=signal_queue.effective_action, signal_cap=signal_queue.effective_cap,
         )
         decision_action, decision_final_cap = merge_position_caps(
             base_action=transition.action, base_cap=transition.position_cap,
             signal_action=decision_signal_action, signal_cap=decision_signal_cap,
         )
-        common = {column: row[column] for column in (
-            "date", "open", "high", "low", "close", "volume", "amount", "ma20", "rsi14", "rsi_zone"
-        )}
+        common_columns = list(dict.fromkeys([
+            "date", "open", "high", "low", "close", "volume", "amount",
+            "ma", ma_column, "rsi", rsi_column, "rsi_zone",
+        ]))
+        common = {column: row[column] for column in common_columns}
+        effective_source = signal_queue.effective_source or {}
         daily_rows.append({
             **common,
             "decision_base_state": transition.current_state.value,
@@ -291,7 +441,19 @@ def analyze_bars(
             "effective_base_state": effective_base_state.value,
             "effective_base_action": effective_base_action,
             "effective_base_position_cap": effective_base_cap,
-            "effective_signal_position_cap": effective_signal_cap,
+            "effective_signal_position_cap": signal_queue.effective_cap,
+            "effective_signal_action_type": (
+                RESET_SIGNAL_DOMAIN
+                if signal_queue.effective_action == RESET_SIGNAL_DOMAIN
+                else APPLY_SIGNAL_CAP if signal_queue.effective_source else None
+            ),
+            "effective_signal_cycle_id": signal_queue.effective_cycle_id,
+            "effective_signal_source_decision_date": effective_source.get("decision_date"),
+            "effective_signal_source_effective_date": effective_source.get("effective_date"),
+            "effective_signal_source_candidate_peak_id": effective_source.get("candidate_peak_id"),
+            "effective_signal_source_canonical_peak_id": effective_source.get("canonical_peak_id"),
+            "effective_signal_source_original_cap": effective_source.get("original_cap"),
+            "effective_signal_source_is_warmup": effective_source.get("is_warmup", False),
             "effective_final_action": effective_action,
             "effective_action": effective_action,
             "effective_final_position_cap": effective_final_cap,
@@ -301,41 +463,34 @@ def analyze_bars(
             "final_action": effective_action,
             "final_position_cap": effective_final_cap,
         })
-        state_rows.append({
+        state_record = {
             "decision_date": _date_text(date), "effective_date": _date_text(next_date), "date": _date_text(date),
             "previous_state": transition.previous_state.value, "current_state": transition.current_state.value,
             "trigger": transition.trigger, "state_event": transition.state_event,
             "allow_reentry": transition.allow_reentry,
             "reentry_qualification_date": _date_text(transition.reentry_qualification_date),
-            "rsi14": row["rsi14"], "close": row["close"], "ma20": row["ma20"],
+            "rsi": row["rsi"], "close": row["close"], "ma": row["ma"],
             "divergence_count": current_divergence_count, "signal_type": day_signal_type,
             "decision_position_cap": decision_final_cap, "effective_position_cap": effective_final_cap,
             "position_cap": effective_final_cap, "signal_reason": day_reason, "cycle_id": tracker.cycle_id,
             "cycle_reset_event": bool(reset_reasons),
             "cycle_reset_reason": "|".join(dict.fromkeys(reset_reasons)) if reset_reasons else None,
-        })
+        }
+        state_record[rsi_column] = row["rsi"]
+        state_record[ma_column] = row["ma"]
+        state_rows.append(state_record)
 
         if reset_reasons:
-            reason = "|".join(dict.fromkeys(reset_reasons))
-            cycle_rows.append({
-                "cycle_id": tracker.cycle_id, "cycle_start_date": _date_text(cycle_start),
-                "cycle_end_date": _date_text(date), "reset_reason": reason,
-                "reset_decision_date": _date_text(date), "reset_effective_date": _date_text(next_date),
-                "cycle_reset_event": True,
-            })
-            cycle_seq += 1
-            new_cycle_id = f"CYCLE{cycle_seq:04d}"
+            assert new_cycle_id is not None
             cycle_start = next_date if not pd.isna(next_date) else date
-            if entered_s3:
-                decision_signal_cap, decision_signal_action = 1.0, "RESET_DIVERGENCE_CAP"
-                add_pending(next_date, {"domain": "signal", "cap": 1.0, "action": decision_signal_action})
-                current_divergence_count = 0
             tracker.reset_cycle(new_cycle_id, baseline=reset_baseline)
 
     cycle_rows.append({
-        "cycle_id": tracker.cycle_id, "cycle_start_date": _date_text(cycle_start),
+        "cycle_id": tracker.cycle_id, "new_cycle_id": None,
+        "cycle_start_date": _date_text(cycle_start),
         "cycle_end_date": _date_text(data["date"].iloc[-1]), "reset_reason": None,
         "reset_decision_date": None, "reset_effective_date": None,
+        "signal_domain_action_type": None,
         "cycle_reset_event": False,
     })
 
@@ -347,9 +502,6 @@ def analyze_bars(
         date_values = pd.to_datetime(frame[column])
         frame.drop(frame.index[~date_values.between(display_start, display_end)], inplace=True)
         frame.reset_index(drop=True, inplace=True)
-    if not signal_frame.empty:
-        mask = pd.to_datetime(signal_frame["decision_date"]).between(display_start, display_end)
-        signal_frame = signal_frame.loc[mask].reset_index(drop=True)
 
     if not peaks.empty:
         peaks["cycle_id"] = peaks["candidate_peak_id"].map(candidate_cycle)
@@ -361,7 +513,7 @@ def analyze_bars(
         canonical_peaks["cycle_id"] = canonical_peaks["representative_candidate_id"].map(candidate_cycle)
 
     input_checksum = _input_checksum(data)
-    rsi_audit = pd.DataFrame({
+    rsi_audit_values = {
         "date": data["date"].dt.strftime("%Y-%m-%d"),
         "raw_close": data["raw_close"] if "raw_close" in data else np.nan,
         "adjusted_close": audit_values["adjusted_close"],
@@ -372,15 +524,21 @@ def analyze_bars(
         "abs_delta": audit_values["absolute_delta"],
         "smoothed_gain": audit_values["smoothed_gain"],
         "smoothed_absolute": audit_values["smoothed_absolute"], "rsi": audit_values["rsi"],
-        "smoothed_abs": audit_values["smoothed_absolute"], "rsi14": audit_values["rsi"],
+        "smoothed_abs": audit_values["smoothed_absolute"],
         "is_warmup": data["date"] < display_start,
         "is_display_range": data["date"].between(display_start, display_end),
         "input_checksum_sha256": input_checksum,
         "config_version": values.get("version", "unknown"),
-    })
+    }
+    rsi_audit_values[rsi_column] = audit_values["rsi"]
+    rsi_audit = pd.DataFrame(rsi_audit_values)
 
     daily["date"] = pd.to_datetime(daily["date"]).dt.strftime("%Y-%m-%d")
     warnings = _build_warnings(data, peaks, warmup_count, requested_warmup)
+    indicator_ready = bool(
+        pd.notna(data.loc[display_mask, "rsi"].iloc[0])
+        and pd.notna(data.loc[display_mask, "ma"].iloc[0])
+    )
     metadata = {
         "symbol": symbol, "name": name,
         "calculation_start_date": _date_text(data["date"].iloc[0]),
@@ -392,17 +550,17 @@ def analyze_bars(
         "warmup_trading_days_actual": warmup_count, "warmup_satisfied": warmup_satisfied,
         "warmup_rows": warmup_count,
         "source_row_count": len(data),
-        "indicator_ready_on_display_start": bool(
-            pd.notna(data.loc[display_mask, "rsi14"].iloc[0])
-            and pd.notna(data.loc[display_mask, "ma20"].iloc[0])
-        ),
+        "indicator_ready_on_display_start": indicator_ready,
+        "backtest_eligible": warmup_satisfied and indicator_ready,
         "rsi_period": period,
+        "config_version": values.get("version", "unknown"),
+        "rsi_levels": {key: float(levels[key]) for key in ("strong", "life", "neutral", "weak")},
         "rsi_algorithm": f"CN_SMA(MAX(CLOSE-REF(CLOSE,1),0),{period},1) / CN_SMA(ABS(CLOSE-REF(CLOSE,1)),{period},1) * 100",
         "seed_mode": seed_mode, "ma_period": ma_period,
         "adjust": bars.attrs.get("adjust", "unknown"),
         "source": bars.attrs.get("source", "provided_dataframe"),
         "input_checksum_sha256": input_checksum,
-        "rsi_difference_explanation": "v0.1从展示区间起点播种；v0.2先加载至少120个真实交易日并在完整前复权序列上递推，因此同日RSI可与旧版38.8449不同。公式未改变，也未写入目标数值。",
+        "rsi_difference_explanation": "RSI先在完整计算区间按配置的递推口径计算，再截取展示区间；预热长度或复权序列不同会造成展示期数值差异。",
     }
     return AnalysisResult(
         symbol, name, daily, peaks, canonical_peaks, signal_frame, state_log,
@@ -412,28 +570,49 @@ def analyze_bars(
 
 def run_batch(
     items: Iterable[tuple[str, str | None, pd.DataFrame]], *, config: RsiExitConfig,
+    display_start_date: str | pd.Timestamp,
+    display_end_date: str | pd.Timestamp,
 ) -> tuple[list[AnalysisResult], pd.DataFrame]:
-    results = [analyze_bars(bars, symbol=symbol, name=name, config=config) for symbol, name, bars in items]
+    results = [
+        analyze_bars(
+            bars, symbol=symbol, name=name, config=config,
+            display_start_date=display_start_date, display_end_date=display_end_date,
+        )
+        for symbol, name, bars in items
+    ]
     return results, build_validation_summary(results)
 
 
 def build_validation_summary(results: Iterable[AnalysisResult]) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for result in results:
-        signals, current = result.signals, result.daily_features.iloc[-1]
+        signals = _display_signals(result.signals)
+        current = result.daily_features.iloc[-1]
+        eligible = bool(result.metadata["backtest_eligible"])
+        ineligible_reason = ""
+        if not result.metadata["warmup_satisfied"]:
+            ineligible_reason = (
+                f"预热不足：实际 {result.metadata['warmup_trading_days_actual']} 日，"
+                f"要求 {result.metadata['warmup_trading_days_requested']} 日"
+            )
+        elif not result.metadata["indicator_ready_on_display_start"]:
+            ineligible_reason = "展示首日指标尚未就绪"
         rows.append({
             "symbol": result.symbol, "name": result.name,
             "start_date": result.metadata["display_start_date"], "end_date": result.metadata["display_end_date"],
             "calculation_start_date": result.metadata["calculation_start_date"],
             "warmup_trading_days_actual": result.metadata["warmup_trading_days_actual"],
             "warmup_satisfied": result.metadata["warmup_satisfied"],
+            "indicator_ready_on_display_start": result.metadata["indicator_ready_on_display_start"],
+            "backtest_eligible": eligible,
+            "backtest_ineligible_reason": ineligible_reason,
             "peak_count": int((result.peaks["is_display_range"] & result.peaks["is_independent_peak"]).sum()) if not result.peaks.empty else 0,
             "strengthening_count": _signal_count(signals, SignalType.TREND_STRENGTHENING),
             "divergence_count_1": _signal_count(signals, SignalType.BEARISH_DIVERGENCE, 1),
             "divergence_count_2": _signal_count(signals, SignalType.BEARISH_DIVERGENCE, 2),
             "divergence_count_3": int(((signals["signal_type"] == SignalType.BEARISH_DIVERGENCE.value) & (signals["divergence_count"] >= 3)).sum()) if not signals.empty else 0,
             "weak_rebound_count": _signal_count(signals, SignalType.LOWER_HIGH_WEAK_REBOUND),
-            "current_rsi": current["rsi14"], "current_state": current["decision_base_state"],
+            "current_rsi": current["rsi"], "current_state": current["decision_base_state"],
             "current_position_cap": current["effective_final_position_cap"],
             "warnings": " | ".join(result.warnings),
         })
@@ -447,6 +626,12 @@ def _signal_count(signals: pd.DataFrame, kind: SignalType, count: int | None = N
     if count is not None:
         mask &= signals["divergence_count"] == count
     return int(mask.sum())
+
+
+def _display_signals(signals: pd.DataFrame) -> pd.DataFrame:
+    if signals.empty or "is_display_range" not in signals:
+        return signals
+    return signals.loc[signals["is_display_range"].astype(bool)]
 
 
 def _normalize_bars(bars: pd.DataFrame) -> pd.DataFrame:
@@ -472,7 +657,7 @@ def _build_warnings(data: pd.DataFrame, peaks: pd.DataFrame, actual: int, reques
     warnings: list[str] = []
     if actual < requested:
         warnings.append(f"HIGH_PRIORITY: 展示起始日前仅有 {actual} 个真实交易日，少于要求的 {requested} 日；结果不得视为完整预热验收。")
-    if data["ma20"].notna().sum() == 0:
+    if data["ma"].notna().sum() == 0:
         warnings.append("MA配置周期内没有有效值，状态保持UNINITIALIZED。")
     if not peaks.empty and peaks["earliest_action_date"].isna().any():
         warnings.append("末端高点已确认，但最早执行日超出当前行情区间。")

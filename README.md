@@ -1,8 +1,8 @@
-# RSI卖点信号识别器 v0.2
+# RSI卖点信号识别器 v0.2.1
 
 面向 A 股日线趋势股的 RSI 卖点与持仓去偏系统。它生成可审计的风险约束，不读取成本、盈亏或持仓时间，不自动下单。
 
-v0.2 修复了四类阻断问题：退出修复状态、至少 120 个真实交易日预热、候选峰/规范峰身份链，以及决策日与生效日混用。AmazingData 仍是唯一在线行情源。
+v0.2.1 在 v0.2 基础上修复 signal cap 与 cycle reset 的同日待生效冲突，并补齐批量预热、预热信号溯源和参数化输出。AmazingData 仍是唯一在线行情源。
 
 ## 安装与测试
 
@@ -42,7 +42,7 @@ python -m rsi_exit.cli `
 - `daily_features.csv`：同列输出 decision 与 effective 状态、动作和仓位上限；
 - `peaks.csv`：每个不可变候选峰及其 canonical、版本、周期和展示标志；
 - `canonical_peaks.csv`：每个 canonical 的当前代表候选；
-- `signals.csv`：形成当时的 current/previous canonical 版本快照、动能锚和生效日；
+- `signals.csv`：保留完整计算区间信号、预热/展示标志、cycle、current/previous canonical 版本快照、动能锚和生效日；
 - `state_log.csv`、`cycle_log.csv`：状态和周期重置审计；
 - `rsi_audit.csv`：原始/复权价格、因子、递推分子分母、预热标志和校验和；
 - `summary.md`、`regression_comparison.md`、`annotated_chart.png`。
@@ -56,5 +56,17 @@ python -m rsi_exit.cli `
 - 默认候选只要求 `t` 相对 `t-1` 双上升、`t+1` 双下降。三日窗口最大值仅在 `require_recent_window_max=true` 时启用。
 - RSI 恰好下降配置容差计为背离；低价且 RSI 容差内持平归为 `LOWER_PRICE_RSI_FLAT`。
 - 同日先保存峰值关系，再执行只影响未来的周期重置。全局同波段合并和局部背离周期互不耦合。
+- 普通信号上限使用 `APPLY_SIGNAL_CAP`，周期重置使用 `RESET_SIGNAL_DOMAIN`；reset 使旧 cycle 的待生效和已生效信号约束失效，新 cycle 从 signal cap=1.0 开始。
+
+批量 Python 入口必须显式传入展示区间，避免把计算区间首日误当展示首日：
+
+```python
+results, summary = run_batch(
+    items,
+    config=config,
+    display_start_date="YYYY-MM-DD",
+    display_end_date="YYYY-MM-DD",
+)
+```
 
 详细口径见 [v0.2 技术说明](docs/rsi_exit_v02.md)。[v0.1 技术说明](docs/rsi_exit_v01.md) 保留为历史基线。

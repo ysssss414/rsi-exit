@@ -23,6 +23,20 @@ SIGNAL_STYLE = {
 }
 
 
+def signal_threshold_label(confirm_rsi: float, *, life_level: float) -> str:
+    operator = "<" if float(confirm_rsi) < float(life_level) else ">="
+    return f"{operator}{float(life_level):g}"
+
+
+def price_axis_label(adjust: str | None) -> str:
+    normalized = str(adjust or "").strip().lower()
+    if normalized == "forward":
+        return "Forward-adjusted price"
+    if normalized in {"raw", "none"}:
+        return "Raw price"
+    return "Price"
+
+
 def create_annotated_chart(
     result: AnalysisResult,
     path: str | Path,
@@ -42,6 +56,8 @@ def create_annotated_chart(
         ].copy()
     signals = result.signals.copy()
     if not signals.empty:
+        if "is_display_range" in signals:
+            signals = signals.loc[signals["is_display_range"].astype(bool)].copy()
         signals["signal_date"] = pd.to_datetime(signals["signal_date"])
         signals["previous_peak_date"] = pd.to_datetime(signals["previous_peak_date"])
 
@@ -53,8 +69,13 @@ def create_annotated_chart(
         gridspec_kw={"height_ratios": [2.1, 1]},
         constrained_layout=True,
     )
+    ma_period = int(result.metadata["ma_period"])
+    configured_levels = (
+        config.values["levels"] if config is not None else result.metadata["rsi_levels"]
+    )
+    life_level = float(configured_levels["life"])
     price_ax.plot(daily["date"], daily["close"], linewidth=1.6, label="Close")
-    price_ax.plot(daily["date"], daily["ma20"], linestyle="--", linewidth=1.2, label="MA20")
+    price_ax.plot(daily["date"], daily["ma"], linestyle="--", linewidth=1.2, label=f"MA{ma_period}")
 
     if not peaks.empty:
         representatives = peaks
@@ -105,7 +126,7 @@ def create_annotated_chart(
             daily.set_index("date")["close"].to_dict()
         )
         rsi_y = subset["signal_date"].map(
-            daily.set_index("date")["rsi14"].to_dict()
+            daily.set_index("date")["rsi"].to_dict()
         )
         price_ax.scatter(
             subset["signal_date"], price_y, marker=marker, s=85,
@@ -118,8 +139,8 @@ def create_annotated_chart(
         for row_index, (_, signal) in enumerate(subset.iterrows()):
             count = int(signal["divergence_count"])
             suffix = str(count) if signal_type == SignalType.BEARISH_DIVERGENCE.value else ""
-            below = " <60" if float(signal["confirm_rsi"]) < 60 else " >=60"
-            text = f"{short_label}{suffix} confirm{below}"
+            threshold = signal_threshold_label(signal["confirm_rsi"], life_level=life_level)
+            text = f"{short_label}{suffix} confirm {threshold}"
             if signal_type in {
                 SignalType.BEARISH_DIVERGENCE.value,
                 SignalType.LOWER_HIGH_WEAK_REBOUND.value,
@@ -163,16 +184,20 @@ def create_annotated_chart(
         )
 
     rsi_period = int(result.metadata["rsi_period"])
-    rsi_ax.plot(daily["date"], daily["rsi14"], linewidth=1.4, label=f"RSI{rsi_period} (CN SMA)")
-    configured_lines = config.values["chart"]["rsi_lines"] if config is not None else [70, 60, 50, 40]
+    rsi_ax.plot(daily["date"], daily["rsi"], linewidth=1.4, label=f"RSI{rsi_period} (CN SMA)")
+    configured_lines = (
+        config.values["chart"]["rsi_lines"]
+        if config is not None
+        else [configured_levels[key] for key in ("strong", "life", "neutral", "weak")]
+    )
     styles = ("--", "-.", ":", ":")
     for index, level in enumerate(configured_lines):
         style = styles[index % len(styles)]
         rsi_ax.axhline(level, linestyle=style, linewidth=0.9, label=f"RSI {level}")
     rsi_ax.set_ylim(0, 105)
     rsi_ax.set_ylabel(f"RSI{rsi_period}")
-    price_ax.set_ylabel("Forward-adjusted price")
-    price_ax.set_title(f"{result.symbol} RSI Exit Signal Recognizer v0.2")
+    price_ax.set_ylabel(price_axis_label(result.metadata.get("adjust")))
+    price_ax.set_title(f"{result.symbol} RSI Exit Signal Recognizer {result.metadata.get('config_version', 'v0.2')}")
     price_ax.grid(alpha=0.22)
     rsi_ax.grid(alpha=0.22)
     price_ax.legend(loc="best", fontsize=8, ncol=2)

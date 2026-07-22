@@ -66,12 +66,14 @@ def test_all_peak_confirm_and_action_dates_are_causal() -> None:
 
 
 def test_batch_summary_contract() -> None:
+    source = bars()
     _, summary = run_batch(
-        [("300308.SZ", "sample", bars())], config=load_config()
+        [("300308.SZ", "sample", source)], config=load_config(),
+        display_start_date=source.iloc[0]["date"],
+        display_end_date=source.iloc[-1]["date"],
     )
     assert len(summary) == 1
     assert {
         "symbol", "name", "peak_count", "divergence_count_1",
         "divergence_count_2", "divergence_count_3", "warnings",
     } <= set(summary.columns)
-

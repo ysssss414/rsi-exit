@@ -14,7 +14,7 @@ from rsi_exit.reporting import write_batch_summary, write_outputs
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="RSI卖点信号识别器 v0.2")
+    parser = argparse.ArgumentParser(description="RSI卖点信号识别器 v0.2.1")
     parser.add_argument("--symbol", required=True, help="AmazingData代码，例如 300308.SZ")
     parser.add_argument("--name", default=None, help="可选名称；在线模式默认由代码信息接口确认")
     parser.add_argument("--start", required=True, help="YYYY-MM-DD")
