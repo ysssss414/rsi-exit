@@ -129,7 +129,7 @@ def test_formal_divergence_requires_local_and_anchor_rsi_checks(case: str) -> No
 
 
 @pytest.mark.parametrize(
-    ("increase", "reset"), [(1.9, False), (2.0, True)]
+    ("increase", "reset"), [(1.999, False), (2.0, True)]
 )
 def test_anchor_breakout_boundary(increase: float, reset: bool) -> None:
     tracker = DivergenceTracker()
@@ -141,6 +141,7 @@ def test_anchor_breakout_boundary(increase: float, reset: bool) -> None:
     ))
     assert (result.chain_reset_reason == "ANCHOR_RSI_BREAKOUT") is reset
     assert tracker.anchor.peak_rsi == (80 + increase if reset else 80)
+    assert tracker.divergence_count == 0
 
 
 def test_structural_peak_without_divergence_updates_last_not_count() -> None:
@@ -153,6 +154,7 @@ def test_structural_peak_without_divergence_updates_last_not_count() -> None:
     ))
     assert result.signal_type == SignalType.STRUCTURAL_PEAK_WITHOUT_DIVERGENCE
     assert tracker.last_structural_peak.representative_candidate_id == "P0001"
+    assert tracker.anchor.representative_candidate_id == "P0000"
     assert tracker.divergence_count == 0
 
 

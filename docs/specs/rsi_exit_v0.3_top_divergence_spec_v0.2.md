@@ -25,6 +25,11 @@ peak_date < confirm_date < earliest_action_date
 确认日只能生成决策，不能同日执行；形成中行没有正式执行日。前缀数据运行已经确认的
 正式峰、背离类型和计数必须与完整数据运行一致。
 
+canonical 的正式不可变键是 `(canonical_peak_id, canonical_version)`。同一版本最多处理
+一次；同一 canonical 的新版本默认只保留 candidate/canonical 审计，不产生正式背离、
+不计数、不进入仓位。唯一正式状态例外是第 5 节的同 canonical anchor breakout。该规则
+是版本化 canonical 与动能锚的一般衔接，不是股票或日期特例。
+
 ## 2. 可比区和价格关系
 
 设上一结构峰为 `P`，从真实交易日序列取得 `P.peak_date` 前一日的收盘价：
@@ -103,6 +108,10 @@ current.rsi <= anchor.rsi - 1.0
 事件为 `NEAR_HIGH_BEARISH_DIVERGENCE`。两者每次都使 `divergence_count += 1` 并更新
 last structural。
 
+`NEW_HIGH_BEARISH_DIVERGENCE` 与 `NEAR_HIGH_BEARISH_DIVERGENCE` 复用 v0.2.1
+既有正式背离仓位及状态转换规则，包括一背、二背、三背退出、S1/S2/S3 和
+`APPLY_SIGNAL_CAP`；v0.3 不修改仓位比例、状态阈值、决策/生效日或 `ALLOW_REENTRY`。
+
 价格可比但双 RSI 条件未同时满足时，事件为
 `STRUCTURAL_PEAK_WITHOUT_DIVERGENCE`：last structural 更新，anchor 和 count 不变。
 中间允许多个此类结构峰；下一次只与最近结构峰比较。低位不可比峰不切断链。
@@ -122,6 +131,14 @@ last structural。
 发生重置时，当前峰不得与旧结构峰形成背离；旧链关闭，当前合格峰建立新锚、成为
 last structural，count 归零。单日 49、`49/50/49`、40.1、不可比峰、forming 失效、
 普通仓位/风险周期事件均不能重置。
+
+同 canonical 新版本先以同组上一正式版本快照验证版本递增、日期因果和 `+2.0` 闭区间
+边界，再以当前 last structural 验证价格关系必须为 `STRICT_NEW_HIGH` 或
+`FORMAL_NEAR_HIGH_RETEST`。全部满足时，它可以作为唯一更新例外输出
+`STRUCTURAL_PEAK_WITHOUT_DIVERGENCE` 和 `ANCHOR_RSI_BREAKOUT`：旧链关闭，当前版本
+成为新 momentum anchor 与 last structural，count 归零且新建 chain；该行不具仓位
+资格，也不触发一背、二背、三背或 S 状态。`+1.999` 只能审计，`+2.000` 才触发；
+同一 `(canonical_peak_id, canonical_version)` 重放不得再次重置。
 
 ## 6. DIVERGENCE_FORMING
 
@@ -179,10 +196,18 @@ EA026086B71A0A0CD537ADA177D141DC44DD634B4882C53F341A8605EE906FA5
 
 6/09、6/25 为 `NON_COMPARABLE_PEAK`；6/18 可为 forming，正式 P3 仍只能是 6/22。
 
-冻结文本对 5/20 有一项数据/标签冲突：按实际 high=1071、close=1037 和 5/14 可比区
-下沿 1049.20，通用优先级得到 `INTRADAY_POTENTIAL_RETEST`，而回归文字把它列为
-`NON_COMPARABLE_PEAK`。实现不得硬编码股票/日期，故采用通用公式；两种标签在业务
-处理上都必须保持非结构、零仓位资格且不改变链。
+5/20 的实际 high=1071、close=1037，5/14 可比区下沿为 1049.20，因此冻结标签为
+`INTRADAY_POTENTIAL_RETEST`。它保持非结构、零仓位资格且不改变链；实现不得硬编码
+股票或日期。
 
 峰7—峰8样例在最高价未严格新高、收盘进入可比区且双 RSI 下降时，必须输出
 `NEAR_HIGH_BEARISH_DIVERGENCE`，不得输出 `WEAK_REBOUND`。
+
+普通 `pytest` 在私有 ZIP 不存在时会明确报告真实冻结回归未执行。发布验收必须运行：
+
+```powershell
+python -m rsi_exit.release_check --frozen-baseline <path-to-frozen-zip>
+pytest -m frozen_baseline_required
+```
+
+缺文件、SHA、ZIP 结构、关键峰序列、仓位资格或前缀不可回写任一不符都必须失败。

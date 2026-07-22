@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import hashlib
+import os
 from pathlib import Path
-import zipfile
 
 import pandas as pd
 import pytest
@@ -10,9 +9,10 @@ import pytest
 from rsi_exit.config import load_config
 from rsi_exit.models import SignalType
 from rsi_exit.pipeline import analyze_bars
+from rsi_exit.release_check import load_frozen_bars as load_required_bars
+from rsi_exit.release_check import validate_frozen_baseline
 
 
-BASELINE_SHA256 = "EA026086B71A0A0CD537ADA177D141DC44DD634B4882C53F341A8605EE906FA5"
 BASELINE_PATH = (
     Path(__file__).resolve().parents[1]
     / "outputs"
@@ -22,13 +22,21 @@ BASELINE_PATH = (
 
 
 def load_frozen_bars() -> pd.DataFrame:
-    if not BASELINE_PATH.exists():
-        pytest.skip("v0.2.1 frozen baseline ZIP is not available in this workspace")
-    assert hashlib.sha256(BASELINE_PATH.read_bytes()).hexdigest().upper() == BASELINE_SHA256
-    with zipfile.ZipFile(BASELINE_PATH) as archive:
-        with archive.open("300308.SZ/daily_features.csv") as handle:
-            frame = pd.read_csv(handle, encoding="utf-8-sig")
-    return frame[["date", "open", "high", "low", "close", "volume", "amount"]]
+    configured = os.getenv("RSI_EXIT_FROZEN_BASELINE_PATH")
+    path = Path(configured) if configured else BASELINE_PATH
+    if not path.exists():
+        pytest.skip(
+            "real frozen baseline regression was not executed: "
+            "set RSI_EXIT_FROZEN_BASELINE_PATH to the private ZIP"
+        )
+    return load_required_bars(path)
+
+
+@pytest.mark.frozen_baseline_required
+def test_required_300308_frozen_baseline_release_check() -> None:
+    configured = os.getenv("RSI_EXIT_FROZEN_BASELINE_PATH")
+    path = Path(configured) if configured else BASELINE_PATH
+    validate_frozen_baseline(path)
 
 
 def test_300308_frozen_baseline_has_expected_v03_structural_chain() -> None:
@@ -89,3 +97,28 @@ def test_300308_low_peaks_and_forming_are_isolated_from_formal_chain() -> None:
     ].iloc[0]
     assert third["decision_date"] == "2026-06-23"
     assert third["divergence_count"] == 3
+
+
+def test_300308_pk0008_versions_are_additive_and_anchor_breakout_is_position_ineligible() -> None:
+    result = analyze_bars(
+        load_frozen_bars(), symbol="300308.SZ", config=load_config(),
+        display_start_date="2026-04-01", display_end_date="2026-07-20",
+    )
+    formal = result.signals.loc[result.signals["signal_status"] == "FORMAL"].set_index(
+        "current_peak_date"
+    )
+    version_1 = formal.loc["2026-04-30"]
+    version_2 = formal.loc["2026-05-14"]
+    assert (
+        version_1["candidate_peak_id"], version_1["canonical_peak_id"],
+        int(version_1["canonical_version"]),
+    ) == ("CP0014", "PK0008", 1)
+    assert (
+        version_2["candidate_peak_id"], version_2["canonical_peak_id"],
+        int(version_2["canonical_version"]),
+    ) == ("CP0015", "PK0008", 2)
+    assert version_2["chain_reset_reason"] == "ANCHOR_RSI_BREAKOUT"
+    assert bool(version_2["same_canonical_anchor_breakout"])
+    assert version_2["momentum_anchor_date"] == "2026-05-14"
+    assert version_2["divergence_count"] == 0
+    assert not bool(version_2["position_eligible"])

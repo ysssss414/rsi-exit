@@ -82,38 +82,45 @@ def _event(candidate_id: str, canonical_id: str, version: int, rsi: float, close
     return PeakEvent(peak, canonical, created, updated)
 
 
-def test_merged_b_can_overtake_a_as_global_momentum_anchor() -> None:
+def test_same_canonical_new_version_can_reset_anchor_at_plus_two() -> None:
     tracker = DivergenceTracker()
     tracker.process(_event("CP0001", "PK0001", 1, 80, 100, created=True, updated=False))
     tracker.process(_event("CP0002", "PK0002", 1, 75, 101, created=True, updated=False))
     assert tracker.anchor.canonical_peak_id == "PK0001"
-    tracker.process(_event("CP0003", "PK0002", 2, 85, 102, created=False, updated=True))
+    chain_id = tracker.divergence_chain_id
+    result = tracker.process(
+        _event("CP0003", "PK0002", 2, 85, 102, created=False, updated=True)
+    )
+    assert result.reset_reason == "ANCHOR_RSI_BREAKOUT"
+    assert result.same_canonical_anchor_breakout
+    assert not result.position_eligible
     assert tracker.anchor.canonical_peak_id == "PK0002"
     assert tracker.anchor.representative_candidate_id == "CP0003"
     assert tracker.anchor.canonical_version == 2
+    assert tracker.divergence_count == 0
+    assert tracker.divergence_chain_id != chain_id
 
 
 def test_lower_rsi_same_canonical_update_never_lowers_anchor() -> None:
     tracker = DivergenceTracker()
     tracker.process(_event("CP0001", "PK0001", 1, 80, 100, created=True, updated=False))
     tracker.process(_event("CP0002", "PK0001", 2, 75, 110, created=False, updated=True))
-    assert tracker.previous.representative_candidate_id == "CP0002"
+    assert tracker.previous.representative_candidate_id == "CP0001"
     assert tracker.anchor.representative_candidate_id == "CP0001"
     assert tracker.anchor.peak_rsi == 80
 
 
-def test_first_global_merge_after_reset_establishes_new_cycle_baseline() -> None:
+def test_reset_does_not_make_evaluated_canonical_version_confirmable_again() -> None:
     tracker = DivergenceTracker()
     tracker.process(_event("CP0001", "PK0001", 1, 80, 100, created=True, updated=False))
     tracker.reset_cycle("CYCLE0002")
     merged = _event("CP0002", "PK0001", 1, 78, 99, created=False, updated=False)
     assert tracker.process(merged) is None
-    assert tracker.previous.representative_candidate_id == "CP0002"
-    assert tracker.previous.peak_rsi == 78
+    assert tracker.previous is None
     followup = tracker.process(_event("CP0003", "PK0002", 1, 75, 101, created=True, updated=False))
-    assert followup is not None
-    assert followup.previous_candidate_peak_id == "CP0002"
-    assert followup.cycle_id == "CYCLE0002"
+    assert followup is None
+    assert tracker.previous.representative_candidate_id == "CP0003"
+    assert tracker.cycle_id == "CYCLE0002"
 
 
 def test_warmup_is_computed_then_display_is_cropped() -> None:

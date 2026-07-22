@@ -180,6 +180,7 @@ class DivergenceResult:
     risk_cycle_id: str | None = None
     position_eligible: bool = False
     close_rejected_from_high_zone: bool = False
+    same_canonical_anchor_breakout: bool = False
 
     @property
     def peak_id(self) -> str:

@@ -53,6 +53,7 @@ SIGNAL_COLUMNS = [
     "structural_eligible", "divergence_type", "divergence_index",
     "signal_status", "chain_reset_reason", "divergence_chain_id",
     "risk_cycle_id", "position_eligible", "close_rejected_from_high_zone",
+    "same_canonical_anchor_breakout",
     "pending_action_type", "invalidated_by_cycle_reset",
     "invalidated_on_date", "invalidated_effective_date",
     "is_warmup", "is_display_range",
@@ -350,6 +351,7 @@ def analyze_bars(
                 "risk_cycle_id": risk_cycle_id,
                 "position_eligible": False,
                 "close_rejected_from_high_zone": forming_result.close_rejected_from_high_zone,
+                "same_canonical_anchor_breakout": False,
                 "pending_action_type": None,
                 "invalidated_by_cycle_reset": False,
                 "invalidated_on_date": None,
@@ -436,7 +438,7 @@ def analyze_bars(
             )
             before_signal_cap = decision_signal_cap
             pending_action_type: str | None = None
-            if result.reset_reason:
+            if result.reset_reason and not result.same_canonical_anchor_breakout:
                 decision_signal_cap = 1.0
                 decision_signal_action = RESET_SIGNAL_DOMAIN
                 reset_reasons.append(result.reset_reason)
@@ -521,6 +523,7 @@ def analyze_bars(
                 "risk_cycle_id": risk_cycle_id,
                 "position_eligible": result.position_eligible,
                 "close_rejected_from_high_zone": result.close_rejected_from_high_zone,
+                "same_canonical_anchor_breakout": result.same_canonical_anchor_breakout,
                 "pending_action_type": pending_action_type,
                 "invalidated_by_cycle_reset": False,
                 "invalidated_on_date": None,
