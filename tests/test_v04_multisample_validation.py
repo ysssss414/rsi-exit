@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import importlib.util
 from pathlib import Path
 
 import pandas as pd
@@ -17,8 +18,18 @@ from rsi_exit.validation import (
     validate_sample_result,
 )
 from rsi_exit.warning_events import WARNING_EVENT_COLUMNS
-from scripts import run_v04_phase4_validation
 
+
+SCRIPT_PATH = (
+    Path(__file__).parents[1] / "scripts" / "run_v04_phase4_validation.py"
+)
+SCRIPT_SPEC = importlib.util.spec_from_file_location(
+    "run_v04_phase4_validation", SCRIPT_PATH
+)
+if SCRIPT_SPEC is None or SCRIPT_SPEC.loader is None:
+    raise ImportError(f"cannot load Phase 4 validation script: {SCRIPT_PATH}")
+run_v04_phase4_validation = importlib.util.module_from_spec(SCRIPT_SPEC)
+SCRIPT_SPEC.loader.exec_module(run_v04_phase4_validation)
 
 PRIVATE_REGRESSION_BASELINE = (
     Path(__file__).parents[1]
