@@ -1,0 +1,68 @@
+{
+  "version": "0.4.0",
+  "rsi": {
+    "period": 14,
+    "seed_mode": "first"
+  },
+  "levels": {
+    "strong": 70.0,
+    "life": 60.0,
+    "neutral": 50.0,
+    "weak": 40.0
+  },
+  "data": {
+    "warmup_trading_days": 120,
+    "ma_period": 20
+  },
+  "peak_detection": {
+    "lookback": 3,
+    "require_recent_window_max": false,
+    "min_peak_gap": 3,
+    "min_rsi_retrace": 5.0,
+    "min_price_retrace_pct": 0.025,
+    "canonical_price_tolerance_pct": 0.005,
+    "max_peak_gap": 30
+  },
+  "divergence": {
+    "comparable_zone_mode": "PREVIOUS_CLOSE_TO_PEAK_CLOSE",
+    "price_epsilon": 0.00000001,
+    "divergence_rsi_tolerance": 1.0,
+    "anchor_rsi_tolerance": 1.0,
+    "momentum_strengthening_tolerance": 1.0,
+    "anchor_reset_tolerance": 2.0,
+    "deep_reset_rsi_level": 50.0,
+    "deep_reset_consecutive_days": 3,
+    "extreme_reset_rsi_level": 40.0,
+    "max_structural_peak_gap": 28,
+    "forming_divergence_position_eligible": false
+  },
+  "position_caps": {
+    "uninitialized": 0.0,
+    "base_s0": 1.0,
+    "base_s1": 1.0,
+    "base_s2": 0.5,
+    "base_s3": 0.0,
+    "base_s4": 0.0,
+    "first_divergence": 0.7,
+    "second_divergence": 0.4,
+    "third_divergence": 0.0,
+    "divergence_below_life": 0.4,
+    "weak_rebound_above_life": 0.7,
+    "weak_rebound_below_life": 0.4
+  },
+  "chart": {
+    "rsi_lines": [70.0, 60.0, 50.0, 40.0]
+  },
+  "data_source": {
+    "provider": "AmazingData",
+    "legacy_provider_root": "D:/ej/材料/codex/yh",
+    "cache_dir": "cache/amazingdata",
+    "retry_count": 3,
+    "retry_delay_seconds": 1.0,
+    "use_numba_compat": true
+  },
+  "output": {
+    "root": "outputs/rsi_exit",
+    "csv_encoding": "utf-8-sig"
+  }
+}

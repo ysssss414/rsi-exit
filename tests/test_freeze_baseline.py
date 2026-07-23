@@ -49,7 +49,7 @@ def _sanitized_result() -> AnalysisResult:
 def _archive_bytes() -> bytes:
     return build_frozen_archive(
         _sanitized_result(),
-        load_config(),
+        load_config(CONFIG_PATH),
         formal_divergence_count=3,
     )
 

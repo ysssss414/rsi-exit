@@ -24,7 +24,7 @@ class RsiExitConfig:
 
 
 def default_config_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "config" / "rsi_exit_v03.yaml"
+    return Path(__file__).resolve().parents[1] / "config" / "rsi_exit_v04.yaml"
 
 
 def load_config(path: str | Path | None = None) -> RsiExitConfig:
@@ -109,7 +109,7 @@ def _validate(raw: dict[str, Any]) -> None:
                 "divergence.forming_divergence_position_eligible 必须是布尔值"
             )
         if divergence["forming_divergence_position_eligible"]:
-            raise ConfigError("v0.3 forming divergence 不得进入仓位系统")
+            raise ConfigError("forming divergence 不得进入仓位系统")
     else:
         # Historical v0.1/v0.2 files remain readable for regression work.
         _number(divergence, "price_tolerance_pct", minimum=0)
