@@ -132,6 +132,7 @@ def build_warning_events(
         warning_sources.sort(
             key=lambda item: (item.decision_date, item.source_version)
         )
+        establishment_risk_cycle_id = warning_sources[0].risk_cycle_id
         previous_version: int | None = None
         for index, source in enumerate(warning_sources):
             if previous_version is not None and source.source_version <= previous_version:
@@ -141,7 +142,11 @@ def build_warning_events(
                 if index == 0
                 else WarningLifecycleEvent.REFRESHED
             )
-            events.append(_build_event(source, lifecycle_event))
+            events.append(_build_event(
+                source,
+                lifecycle_event,
+                establishment_risk_cycle_id=establishment_risk_cycle_id,
+            ))
             previous_version = source.source_version
 
     events.sort(key=lambda event: (
@@ -259,20 +264,12 @@ def _normalize_source(
         "pending_action_type is None",
     )
 
-    latest_id_value = source.get("latest_confirmed_canonical_id")
-    latest_confirmed_canonical_id = (
-        None if latest_id_value is None else str(latest_id_value)
-    )
-    latest_version_value = source.get("latest_confirmed_canonical_version")
-    latest_confirmed_canonical_version = (
-        None
-        if latest_version_value is None
-        else _version_value(
-            symbol,
-            source,
-            latest_version_value,
-            "latest_confirmed_canonical_version",
-        )
+    (
+        latest_confirmed_canonical_id,
+        latest_confirmed_canonical_version,
+    ) = _optional_latest_canonical_pair(
+        symbol,
+        source,
     )
     warning_id = _stable_id("FWARN-", {
         "symbol": symbol,
@@ -322,6 +319,8 @@ def _normalize_source(
 def _build_event(
     source: _WarningSource,
     lifecycle_event: WarningLifecycleEvent,
+    *,
+    establishment_risk_cycle_id: str,
 ) -> WarningEvent:
     warning_event_id = _stable_id("WEVT-", {
         "warning_id": source.warning_id,
@@ -352,7 +351,7 @@ def _build_event(
         latest_confirmed_canonical_id=source.latest_confirmed_canonical_id,
         latest_confirmed_canonical_version=source.latest_confirmed_canonical_version,
         divergence_chain_id=source.divergence_chain_id,
-        risk_cycle_id=source.risk_cycle_id,
+        risk_cycle_id=establishment_risk_cycle_id,
         price_relation=source.price_relation,
         local_rsi_delta=source.local_rsi_delta,
         anchor_rsi_delta=source.anchor_rsi_delta,
@@ -378,13 +377,49 @@ def _required_text(
     assertion_name: str,
 ) -> str:
     value = source.get(key)
-    _require(
-        symbol,
-        source,
-        value is not None and str(value).strip() != "",
-        f"{assertion_name} is nonempty",
+    if not pd.api.types.is_scalar(value) or _is_missing_scalar(value):
+        _raise_contract_error(symbol, source, f"{assertion_name} is nonempty text")
+    text = str(value).strip()
+    if not text:
+        _raise_contract_error(symbol, source, f"{assertion_name} is nonempty text")
+    return text
+
+
+def _optional_latest_canonical_pair(
+    symbol: str,
+    source: Mapping[str, object],
+) -> tuple[str | None, int | None]:
+    assertion = (
+        "latest_confirmed_canonical_id/version are both null or both valid"
     )
-    return str(value)
+    canonical_id = source.get("latest_confirmed_canonical_id")
+    canonical_version = source.get("latest_confirmed_canonical_version")
+    if not pd.api.types.is_scalar(canonical_id) or not pd.api.types.is_scalar(
+        canonical_version
+    ):
+        _raise_contract_error(symbol, source, assertion)
+    id_missing = _is_missing_scalar(canonical_id)
+    version_missing = _is_missing_scalar(canonical_version)
+    if id_missing and version_missing:
+        return None, None
+    version = _positive_version(canonical_version)
+    if id_missing or version_missing or version is None:
+        _raise_contract_error(symbol, source, assertion)
+    canonical_id_text = str(canonical_id).strip()
+    if not canonical_id_text:
+        _raise_contract_error(symbol, source, assertion)
+    return canonical_id_text, version
+
+
+def _is_missing_scalar(value: object) -> bool:
+    if value is None:
+        return True
+    if not pd.api.types.is_scalar(value):
+        return False
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def _required_version(
@@ -397,7 +432,7 @@ def _required_version(
     _require(
         symbol,
         source,
-        value is not None and str(value).strip() != "",
+        pd.api.types.is_scalar(value) and not _is_missing_scalar(value),
         f"{assertion_name} is nonempty",
     )
     return _version_value(symbol, source, value, assertion_name)
@@ -409,17 +444,24 @@ def _version_value(
     value: object,
     assertion_name: str,
 ) -> int:
-    try:
-        version = int(value)  # type: ignore[arg-type]
-        exact = not isinstance(value, float) or value.is_integer()
-    except (TypeError, ValueError, OverflowError):
-        version, exact = 0, False
+    version = _positive_version(value)
     _require(
         symbol,
         source,
-        not isinstance(value, bool) and exact and version > 0,
+        version is not None,
         f"{assertion_name} is a positive integer",
     )
+    return version
+
+
+def _positive_version(value: object) -> int | None:
+    try:
+        version = int(value)  # type: ignore[arg-type]
+        exact = math.isfinite(float(value)) and float(value) == version
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if isinstance(value, bool) or not exact or version <= 0:
+        return None
     return version
 
 

@@ -24,6 +24,7 @@ from rsi_exit.models import (
     WarningType,
 )
 from rsi_exit.pipeline import analyze_bars
+from rsi_exit.release_check import load_frozen_bars as load_required_bars
 from rsi_exit.reporting import build_summary, write_outputs
 from rsi_exit.warning_events import (
     WARNING_EVENT_COLUMNS,
@@ -40,6 +41,12 @@ FROZEN_BASELINE = (
     Path(__file__).parents[1]
     / "baselines"
     / "300308.SZ_v0.3.0_frozen_baseline.zip"
+)
+PRIVATE_REGRESSION_BASELINE = (
+    Path(__file__).parents[1]
+    / "outputs"
+    / "v0.2.1_baseline"
+    / "300308.SZ_v0.2.1_frozen_baseline.zip"
 )
 
 
@@ -198,6 +205,75 @@ def test_trigger_source_contract_rejects_broken_facts(
     assert assertion in message
 
 
+@pytest.mark.parametrize(("field", "bad_value"), [
+    ("candidate_peak_id", np.nan),
+    ("momentum_anchor_canonical_id", pd.NA),
+    ("previous_canonical_peak_id", pd.NaT),
+    ("divergence_chain_id", np.nan),
+    ("risk_cycle_id", pd.NA),
+    ("candidate_peak_id", []),
+    ("divergence_chain_id", {}),
+])
+def test_required_text_rejects_missing_and_non_scalar_values(
+    field: str,
+    bad_value: object,
+) -> None:
+    source = warning_source(**{field: bad_value})
+    with pytest.raises(WarningSourceContractError) as exc_info:
+        build_warning_events(symbol="TEST.SZ", sources=[source])
+    message = str(exc_info.value)
+    assert "symbol=TEST.SZ" in message
+    assert "source_version=1" in message
+    assert "is nonempty text" in message
+
+
+@pytest.mark.parametrize(("canonical_id", "canonical_version"), [
+    (None, 1),
+    ("PK0008", None),
+    ("", 1),
+    (np.nan, 1),
+    ("PK0008", np.nan),
+    ("PK0008", 0),
+    ("PK0008", -1),
+])
+def test_latest_confirmed_canonical_pair_rejects_partial_or_invalid_values(
+    canonical_id: object,
+    canonical_version: object,
+) -> None:
+    source = warning_source(
+        latest_confirmed_canonical_id=canonical_id,
+        latest_confirmed_canonical_version=canonical_version,
+    )
+    with pytest.raises(
+        WarningSourceContractError,
+        match="latest_confirmed_canonical_id/version are both null or both valid",
+    ) as exc_info:
+        build_warning_events(symbol="TEST.SZ", sources=[source])
+    message = str(exc_info.value)
+    assert "symbol=TEST.SZ" in message
+    assert "source_peak_id=FPK0001" in message
+    assert "source_version=1" in message
+
+
+@pytest.mark.parametrize(("canonical_id", "canonical_version"), [
+    (None, None),
+    ("PK0008", 2),
+])
+def test_latest_confirmed_canonical_pair_accepts_null_or_valid_values(
+    canonical_id: object,
+    canonical_version: object,
+) -> None:
+    event = build_warning_events(
+        symbol="TEST.SZ",
+        sources=[warning_source(
+            latest_confirmed_canonical_id=canonical_id,
+            latest_confirmed_canonical_version=canonical_version,
+        )],
+    )[0]
+    assert event.latest_confirmed_canonical_id == canonical_id
+    assert event.latest_confirmed_canonical_version == canonical_version
+
+
 def test_contract_delta_boundary_minus_one_is_valid() -> None:
     event = build_warning_events(
         symbol="TEST.SZ",
@@ -271,6 +347,37 @@ def test_opened_refreshed_dedupe_and_version_gaps() -> None:
 
     gap = _event_frame(v1, warning_source(version=4, decision_date="2026-01-08"))
     assert gap["source_version"].tolist() == [1, 4]
+
+
+def test_refresh_keeps_establishment_risk_cycle_snapshot() -> None:
+    sources = [
+        warning_source(
+            version=1,
+            decision_date="2026-01-05",
+            risk_cycle_id="CYCLE0005",
+        ),
+        warning_source(
+            version=2,
+            decision_date="2026-01-06",
+            risk_cycle_id="CYCLE0006",
+        ),
+        warning_source(
+            version=3,
+            decision_date="2026-01-07",
+            risk_cycle_id="CYCLE0007",
+        ),
+    ]
+    ordered = _event_frame(*sources)
+    shuffled = _event_frame(sources[2], sources[0], sources[1])
+    pd.testing.assert_frame_equal(ordered, shuffled)
+    assert ordered["warning_id"].nunique() == 1
+    assert ordered["lifecycle_event"].tolist() == [
+        "OPENED", "REFRESHED", "REFRESHED",
+    ]
+    assert ordered["source_version"].tolist() == [1, 2, 3]
+    assert ordered["risk_cycle_id"].tolist() == [
+        "CYCLE0005", "CYCLE0005", "CYCLE0005",
+    ]
 
 
 def test_same_event_identity_with_different_evidence_is_rejected() -> None:
@@ -473,3 +580,27 @@ def test_v03_frozen_archive_and_release_contract_exclude_warning_events() -> Non
     assert manifest["formal_divergence_count"] == 3
     with zipfile.ZipFile(FROZEN_BASELINE) as archive:
         assert not any("warning_events" in member for member in archive.namelist())
+
+
+def test_private_frozen_regression_emits_phase1_warning_events_only() -> None:
+    if not PRIVATE_REGRESSION_BASELINE.exists():
+        pytest.skip("private frozen regression input is unavailable")
+    result = analyze_bars(
+        load_required_bars(PRIVATE_REGRESSION_BASELINE),
+        symbol="300308.SZ",
+        name="中际旭创",
+        config=load_config(),
+        display_start_date="2026-05-01",
+        display_end_date="2026-07-20",
+    )
+    assert not result.warning_events.empty
+    assert set(result.warning_events["warning_type"]) == {
+        "FORMING_DIVERGENCE_WARNING"
+    }
+    assert set(result.warning_events["lifecycle_event"]) <= {"OPENED", "REFRESHED"}
+    assert set(result.warning_events["position_effect"]) == {"NONE"}
+    formal_types = {
+        SignalType.NEW_HIGH_BEARISH_DIVERGENCE.value,
+        SignalType.NEAR_HIGH_BEARISH_DIVERGENCE.value,
+    }
+    assert int(result.signals["signal_type"].isin(formal_types).sum()) == 3
