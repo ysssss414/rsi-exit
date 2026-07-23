@@ -43,31 +43,35 @@ SANITIZED_FIXTURE = (
     Path(__file__).parent / "fixtures" / "v03_sanitized_canonical_sequence.csv"
 )
 V03_CONFIG_SHA256 = (
-    "60DF8EB61E08EF2C54864A29068D63B637F360DDFDC4A27656F656BACA54EAAA"
+    "597A46333E4FE4F8DFD0816D70AC70D90E4E12D242F84CC8BA6939DB5721A760"
 )
 V03_BASELINE_SHA256 = (
     "932D0220AAB4A3BDC6BB0EA3A77630A994702E821E1FF72C7A4F3E25B6D1BF52"
 )
 PHASE_ARTIFACT_SHA256 = {
     "docs/validation/v04_phase4/outcome_summary.csv":
-        "B5F89EF19DB1D1ECAA0378CF17BA816620862AAD2F7CC4B5883112FBE85180D0",
+        "DF3CA5B0402BFD45EC33B4CFD99BA7519E7EF32EED9DFA5B041FFF4F38605119",
     "docs/validation/v04_phase4/sample_summary.csv":
-        "47694B03C96CF7E4FD4A4CAD5F491854ADBF73CE468CA2CA562313EE90CBB101",
+        "DD79674BDA7AE9C8EF302B3DBB4FB933520B1322D5F990B995F9B61A86780444",
     "docs/validation/v04_phase4/validation_report.md":
-        "656B7BBD33807F2CBE185C6F6058E6F00336A662C6E116BF6A195F5E24B86732",
+        "AD7F814279C35EA928C6F073603C2F717C20F0CE8484BDCC8F20F9186E27B948",
     "docs/validation/v04_phase4/warning_outcomes.csv":
-        "5A0166ECD1FE335674878F88F57492CB34A08E11170FF2155720D7C797443D7E",
+        "E5DCA3958946CD308FFCA100F7FF722EC75C1ED8FB6A057BC45549E45F11F31D",
     "docs/validation/v04_phase41_actionability/actionability_report.md":
-        "3B0A093E0C3C2E173765A4352B1E1C4CD97A6DB2D18E5FDBE7366027A3CDA406",
+        "7FCC2AFDECEC1C43F8C403C526632C9F068DFF2106DE2942D03031C10BB17615",
     "docs/validation/v04_phase41_actionability/event_actionability_summary.csv":
-        "43EEBC4448E38B6B6A8BE3429CD5BDC7F4A4A77406DBC28E7B0FA2E212D79C95",
+        "5DBD8C9573207BC6AF345DA18E48BC4548CBF91F440FBC78486C0CA52670E2DE",
     "docs/validation/v04_phase41_actionability/event_outcomes.csv":
-        "41F4D68C04F6E5EBB7C4C732ACAC9F416F797A6166932404E29CA91998AD231A",
+        "886AB4F0BB95509803C2381EC306AEEA8CD0EA516AD67964F52968D21997E5DA",
     "docs/validation/v04_phase41_actionability/formal_warning_linkage.csv":
-        "7051291B79365190D36B9EF564142BF12564893144E11BDDE589476B71B5D9E9",
+        "3DDD685CC32DAC432254DB66CF3CCAEE663D99BBF6854E5482062784692492FF",
     "docs/validation/v04_phase41_actionability/opened_to_escalated.csv":
-        "2E41D78F4BD5F19026D43FF9B01E5E4CE49781AF87E3F8BB9CD03836DD21A1C1",
+        "16DBAD993DC527730DD86929167B195CB20A8F543704A2E31D2D50A6810E98FB",
 }
+
+
+def _git_canonical_text_bytes(path: Path) -> bytes:
+    return path.read_bytes().replace(b"\r\n", b"\n")
 
 
 def _sanitized_result() -> AnalysisResult:
@@ -145,7 +149,10 @@ def test_v04_version_identity_and_default_config_are_consistent() -> None:
 
 
 def test_v03_config_is_immutable_and_v04_only_changes_version() -> None:
-    assert sha256(V03_CONFIG.read_bytes()).hexdigest().upper() == V03_CONFIG_SHA256
+    assert (
+        sha256(_git_canonical_text_bytes(V03_CONFIG)).hexdigest().upper()
+        == V03_CONFIG_SHA256
+    )
     v03 = load_config(V03_CONFIG).values
     v04 = load_config(V04_CONFIG).values
     assert v03["version"] == "0.3.0"
@@ -277,5 +284,7 @@ def test_escalated_delegates_once_to_existing_formal_signal_cap() -> None:
 
 def test_phase4_and_phase41_committed_artifacts_are_byte_identical() -> None:
     for relative_path, expected in PHASE_ARTIFACT_SHA256.items():
-        actual = sha256((PROJECT_ROOT / relative_path).read_bytes()).hexdigest()
+        actual = sha256(
+            _git_canonical_text_bytes(PROJECT_ROOT / relative_path)
+        ).hexdigest()
         assert actual.upper() == expected, relative_path
