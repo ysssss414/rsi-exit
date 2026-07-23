@@ -71,7 +71,7 @@ Final local verification:
 
 GitHub Actions matrix:
 
-- Python 3.10–3.13: pending Draft PR
+- Python 3.10–3.13: passed on Draft PR #13 for the latest PR head
 
 ## Verification commands
 
