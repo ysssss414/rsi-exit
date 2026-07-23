@@ -111,7 +111,9 @@ def test_warning_model_is_frozen_and_enums_are_approved() -> None:
     assert [item.value for item in WarningStatus] == [
         "ACTIVE", "ESCALATED", "CLEARED", "INVALIDATED",
     ]
-    assert [item.value for item in WarningSourceKind] == ["FORMING_PEAK"]
+    assert [item.value for item in WarningSourceKind] == [
+        "FORMING_PEAK", "FORMAL_SIGNAL", "DAILY_RSI",
+    ]
     assert [item.value for item in WarningPositionEffect] == ["NONE"]
 
 
@@ -512,7 +514,10 @@ def test_pipeline_warning_layer_is_fully_isolated(monkeypatch) -> None:
     normal = analyze_bars(bars, symbol="WARNING.ISOLATION", config=load_config())
     assert not normal.warning_events.empty
 
-    monkeypatch.setattr("rsi_exit.pipeline.build_warning_events", lambda **_: [])
+    monkeypatch.setattr(
+        "rsi_exit.pipeline.build_warning_lifecycle_events",
+        lambda **_: [],
+    )
     isolated = analyze_bars(bars, symbol="WARNING.ISOLATION", config=load_config())
     assert isolated.warning_events.empty
     for attribute in (
@@ -582,7 +587,7 @@ def test_v03_frozen_archive_and_release_contract_exclude_warning_events() -> Non
         assert not any("warning_events" in member for member in archive.namelist())
 
 
-def test_private_frozen_regression_emits_phase1_warning_events_only() -> None:
+def test_private_frozen_regression_preserves_warning_event_contract() -> None:
     if not PRIVATE_REGRESSION_BASELINE.exists():
         pytest.skip("private frozen regression input is unavailable")
     result = analyze_bars(
@@ -597,7 +602,9 @@ def test_private_frozen_regression_emits_phase1_warning_events_only() -> None:
     assert set(result.warning_events["warning_type"]) == {
         "FORMING_DIVERGENCE_WARNING"
     }
-    assert set(result.warning_events["lifecycle_event"]) <= {"OPENED", "REFRESHED"}
+    assert set(result.warning_events["lifecycle_event"]) <= {
+        item.value for item in WarningLifecycleEvent
+    }
     assert set(result.warning_events["position_effect"]) == {"NONE"}
     formal_types = {
         SignalType.NEW_HIGH_BEARISH_DIVERGENCE.value,

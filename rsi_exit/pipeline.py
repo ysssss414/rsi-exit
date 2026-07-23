@@ -15,7 +15,10 @@ from rsi_exit.models import BaseState, SignalType
 from rsi_exit.peak_detector import PeakDetector
 from rsi_exit.position_rules import divergence_position_rule, merge_position_caps
 from rsi_exit.state_machine import RsiExitStateMachine
-from rsi_exit.warning_events import build_warning_events, warning_events_frame
+from rsi_exit.warning_events import (
+    build_warning_lifecycle_events,
+    warning_events_frame,
+)
 
 
 @dataclass
@@ -238,6 +241,8 @@ def analyze_bars(
     current_divergence_count = 0
     signals: list[dict[str, Any]] = []
     forming_warning_sources: list[dict[str, object]] = []
+    formal_warning_sources: list[dict[str, object]] = []
+    daily_warning_sources: list[dict[str, object]] = []
     daily_rows: list[dict[str, Any]] = []
     state_rows: list[dict[str, Any]] = []
     cycle_rows: list[dict[str, Any]] = []
@@ -256,6 +261,14 @@ def analyze_bars(
 
     for row_index, row in data.iterrows():
         date = pd.Timestamp(row["date"])
+        daily_warning_sources.append({
+            "symbol": symbol,
+            "date": _date_text(date),
+            "close": row["close"],
+            "rsi": row["rsi"],
+            "is_warmup": date < display_start,
+            "is_display_range": display_start <= date <= display_end,
+        })
         due_entries = base_pending.pop(date, [])
         if due_entries:
             chosen = min(due_entries, key=lambda item: float(item["cap"]))
@@ -380,6 +393,8 @@ def analyze_bars(
                 "candidate_peak_id": forming_signal["candidate_peak_id"],
                 "canonical_version": forming_signal["canonical_version"],
                 "current_peak_date": forming_signal["current_peak_date"],
+                "current_peak_close": forming_signal["current_peak_close"],
+                "current_peak_rsi": forming_signal["current_peak_rsi"],
                 "decision_date": forming_signal["decision_date"],
                 "momentum_anchor_canonical_id": forming_signal[
                     "momentum_anchor_canonical_id"
@@ -582,6 +597,52 @@ def analyze_bars(
                 "final_position_cap": decision_final_cap, "final_action": decision_action,
             }
             signals.append(signal_record)
+            if signal_record["signal_status"] == "FORMAL":
+                latest_confirmed = tracker.latest_confirmed_canonical
+                formal_warning_sources.append({
+                    "symbol": symbol,
+                    "decision_date": signal_record["decision_date"],
+                    "signal_type": signal_record["signal_type"],
+                    "signal_status": signal_record["signal_status"],
+                    "structural_eligible": signal_record["structural_eligible"],
+                    "current_peak_date": signal_record["current_peak_date"],
+                    "current_canonical_peak_id": signal_record[
+                        "current_canonical_peak_id"
+                    ],
+                    "current_canonical_version": signal_record[
+                        "current_canonical_version"
+                    ],
+                    "previous_canonical_peak_id": signal_record[
+                        "previous_canonical_peak_id"
+                    ],
+                    "previous_canonical_version": signal_record[
+                        "previous_canonical_version"
+                    ],
+                    "momentum_anchor_canonical_id": signal_record[
+                        "momentum_anchor_canonical_id"
+                    ],
+                    "momentum_anchor_canonical_version": signal_record[
+                        "momentum_anchor_canonical_version"
+                    ],
+                    "divergence_chain_id": signal_record["divergence_chain_id"],
+                    "position_eligible": signal_record["position_eligible"],
+                    "reset_reason": signal_record["reset_reason"],
+                    "same_canonical_anchor_breakout": signal_record[
+                        "same_canonical_anchor_breakout"
+                    ],
+                    "is_warmup": signal_record["is_warmup"],
+                    "is_display_range": signal_record["is_display_range"],
+                    "latest_confirmed_canonical_id": (
+                        None
+                        if latest_confirmed is None
+                        else latest_confirmed.canonical_peak_id
+                    ),
+                    "latest_confirmed_canonical_version": (
+                        None
+                        if latest_confirmed is None
+                        else latest_confirmed.canonical_version
+                    ),
+                })
             if pending_action_type == APPLY_SIGNAL_CAP:
                 signal_queue.schedule_cap(
                     action_date,
@@ -731,9 +792,16 @@ def analyze_bars(
     daily["date"] = pd.to_datetime(daily["date"])
     state_log = pd.DataFrame(state_rows)
     signal_frame = pd.DataFrame(signals, columns=SIGNAL_COLUMNS)
-    warning_events = warning_events_frame(build_warning_events(
+    warning_events = warning_events_frame(build_warning_lifecycle_events(
         symbol=symbol,
-        sources=forming_warning_sources,
+        forming_sources=forming_warning_sources,
+        formal_sources=formal_warning_sources,
+        daily_sources=daily_warning_sources,
+        deep_reset_rsi_level=float(div_cfg["deep_reset_rsi_level"]),
+        deep_reset_consecutive_days=int(
+            div_cfg["deep_reset_consecutive_days"]
+        ),
+        extreme_reset_rsi_level=float(div_cfg["extreme_reset_rsi_level"]),
     ))
     for frame, column in ((daily, "date"), (state_log, "date")):
         date_values = pd.to_datetime(frame[column])
