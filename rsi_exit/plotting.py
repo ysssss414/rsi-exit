@@ -33,6 +33,14 @@ FORMAL_DIVERGENCE_VALUES = {
     SignalType.NEAR_HIGH_BEARISH_DIVERGENCE.value,
 }
 
+WARNING_LIFECYCLE_STYLE = {
+    "OPENED": ("o", "tab:orange", "Warning opened"),
+    "REFRESHED": (">", "tab:blue", "Warning active latest"),
+    "ESCALATED": ("*", "tab:red", "Warning escalated"),
+    "CLEARED": ("P", "tab:green", "Warning cleared"),
+    "INVALIDATED": ("X", "tab:gray", "Warning invalidated"),
+}
+
 
 def signal_threshold_label(confirm_rsi: float, *, life_level: float) -> str:
     operator = "<" if float(confirm_rsi) < float(life_level) else ">="
@@ -227,6 +235,42 @@ def create_annotated_chart(
             label="Momentum anchor", zorder=6,
         )
 
+    warning_points = _warning_lifecycle_plot_points(
+        result.warning_events,
+        daily,
+        display_start_date=result.metadata["display_start_date"],
+        display_end_date=result.metadata["display_end_date"],
+    )
+    for lifecycle_event, (marker, color, label) in (
+        WARNING_LIFECYCLE_STYLE.items()
+    ):
+        if warning_points.empty:
+            break
+        subset = warning_points.loc[
+            warning_points["lifecycle_event"] == lifecycle_event
+        ]
+        if subset.empty:
+            continue
+        scatter_options: dict[str, object] = {
+            "marker": marker,
+            "s": 82,
+            "label": label,
+            "zorder": 7,
+        }
+        if lifecycle_event == "OPENED":
+            scatter_options.update({
+                "facecolors": "none",
+                "edgecolors": color,
+                "linewidths": 1.4,
+            })
+        else:
+            scatter_options["color"] = color
+        rsi_ax.scatter(
+            pd.to_datetime(subset["decision_date"]),
+            subset["plot_rsi"],
+            **scatter_options,
+        )
+
     rsi_period = int(result.metadata["rsi_period"])
     rsi_ax.plot(daily["date"], daily["rsi"], linewidth=1.4, label=f"RSI{rsi_period} (CN SMA)")
     configured_lines = (
@@ -252,6 +296,99 @@ def create_annotated_chart(
     fig.savefig(output, dpi=170)
     plt.close(fig)
     return output
+
+
+def _select_warning_lifecycle_events(
+    warning_events: pd.DataFrame,
+    *,
+    display_start_date: object,
+    display_end_date: object,
+) -> pd.DataFrame:
+    """Select at most the display OPENED and latest event per warning."""
+
+    events = warning_events.copy(deep=True)
+    if events.empty:
+        return events
+    display_start = pd.Timestamp(display_start_date)
+    display_end = pd.Timestamp(display_end_date)
+    events["_event_order"] = range(len(events))
+    events["_decision_timestamp"] = pd.to_datetime(events["decision_date"])
+    events = events.loc[events["_decision_timestamp"] <= display_end]
+    in_display = events.loc[
+        events["_decision_timestamp"].between(display_start, display_end)
+    ]
+    warning_ids = set(in_display["warning_id"])
+    eligible = events.loc[events["warning_id"].isin(warning_ids)].sort_values(
+        [
+            "_decision_timestamp",
+            "warning_id",
+            "_event_order",
+            "source_version",
+        ],
+        kind="mergesort",
+    )
+
+    selected_rows: list[pd.Series] = []
+    for warning_id in sorted(warning_ids):
+        history = eligible.loc[eligible["warning_id"] == warning_id]
+        opened = history.loc[
+            (history["lifecycle_event"] == "OPENED")
+            & history["_decision_timestamp"].between(display_start, display_end)
+        ]
+        opened_event_id: object | None = None
+        if not opened.empty:
+            opened_row = opened.iloc[0]
+            opened_event_id = opened_row["warning_event_id"]
+            selected_rows.append(opened_row)
+        latest = history.iloc[-1]
+        if opened_event_id != latest["warning_event_id"]:
+            selected_rows.append(latest)
+
+    if not selected_rows:
+        return warning_events.iloc[0:0].copy()
+    selected = pd.DataFrame(selected_rows).drop_duplicates(
+        "warning_event_id",
+        keep="first",
+    ).sort_values(
+        [
+            "_decision_timestamp",
+            "warning_id",
+            "_event_order",
+            "source_version",
+        ],
+        kind="mergesort",
+    )
+    return selected.drop(
+        columns=["_event_order", "_decision_timestamp"]
+    ).reset_index(drop=True)
+
+
+def _warning_lifecycle_plot_points(
+    warning_events: pd.DataFrame,
+    daily_features: pd.DataFrame,
+    *,
+    display_start_date: object,
+    display_end_date: object,
+) -> pd.DataFrame:
+    """Map selected warning events to same-day RSI without substitution."""
+
+    selected = _select_warning_lifecycle_events(
+        warning_events,
+        display_start_date=display_start_date,
+        display_end_date=display_end_date,
+    )
+    if selected.empty:
+        output = selected.copy()
+        output["plot_rsi"] = pd.Series(dtype=float)
+        return output
+    daily = daily_features.loc[:, ["date", "rsi"]].copy(deep=True)
+    daily["_date_timestamp"] = pd.to_datetime(daily["date"])
+    rsi_by_date = daily.set_index("_date_timestamp")["rsi"].to_dict()
+    output = selected.copy(deep=True)
+    output["plot_rsi"] = pd.to_datetime(output["decision_date"]).map(
+        rsi_by_date
+    )
+    return output.loc[output["plot_rsi"].notna()].reset_index(drop=True)
 
 
 def _effective_representatives(peaks: pd.DataFrame) -> pd.DataFrame:

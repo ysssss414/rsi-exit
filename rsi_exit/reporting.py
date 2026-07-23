@@ -18,6 +18,11 @@ FORMAL_DIVERGENCE_VALUES = {
     SignalType.NEAR_HIGH_BEARISH_DIVERGENCE.value,
 }
 
+WARNING_STATUS_ORDER = ("ACTIVE", "ESCALATED", "CLEARED", "INVALIDATED")
+WARNING_LIFECYCLE_ORDER = (
+    "OPENED", "REFRESHED", "ESCALATED", "CLEARED", "INVALIDATED",
+)
+
 
 def write_outputs(
     result: AnalysisResult,
@@ -85,6 +90,37 @@ def build_summary(result: AnalysisResult, config: RsiExitConfig) -> str:
         f"- {row['decision_date']} / {row['signal_type']} / {row['candidate_peak_id']}→{row['canonical_peak_id']}@v{int(row['canonical_version'])} / count={int(row['divergence_count'])} / decision cap={float(row['decision_final_position_cap']):.2f} / effective={row['effective_date'] or '区间外'}"
         for _, row in signals.iterrows()
     ]
+    warning_snapshot = _warning_reporting_snapshot(
+        result.warning_events,
+        display_start_date=result.metadata["display_start_date"],
+        display_end_date=result.metadata["display_end_date"],
+    )
+    state_counts = warning_snapshot["state_counts"]
+    event_counts = warning_snapshot["event_counts"]
+    active_warning_lines = [
+        (
+            f"- {row['warning_id']} / latest={row['lifecycle_event']} / "
+            f"peak={row['source_peak_id']}@v{int(row['source_version'])} "
+            f"({row['source_peak_date']}) / decision={row['decision_date']} / "
+            f"relation={row['price_relation']} / "
+            f"local_rsi_delta={float(row['local_rsi_delta']):.2f} / "
+            f"anchor_rsi_delta={float(row['anchor_rsi_delta']):.2f} / "
+            f"chain={row['divergence_chain_id']} / "
+            f"risk_cycle={row['risk_cycle_id']}"
+        )
+        for _, row in warning_snapshot["active"].iterrows()
+    ]
+    lifecycle_lines = [
+        (
+            f"- {row['decision_date']} / {row['lifecycle_event']} / "
+            f"status={row['warning_status']} / {row['warning_id']} / "
+            f"source={row['source_kind']}:{row['source_peak_id']}"
+            f"@v{int(row['source_version'])} / "
+            f"end={_summary_value(row['end_reason'])} / "
+            f"formal={_summary_value(row['linked_formal_signal_ref'])}"
+        )
+        for _, row in warning_snapshot["timeline"].iterrows()
+    ]
     warning_lines = [f"- {item}" for item in result.warnings]
     return "\n".join([
         f"# {result.name or result.symbol} RSI卖点识别摘要（{config.values.get('version', 'unknown')}）", "",
@@ -102,6 +138,18 @@ def build_summary(result: AnalysisResult, config: RsiExitConfig) -> str:
         f"- 当前RSI：{float(current['rsi']):.4f}" if pd.notna(current["rsi"]) else "- 当前RSI：不可用",
         f"- 当前有效仓位上限：{float(current['effective_final_position_cap']):.2f}",
         "", "## 信号与仓位", "", *(signal_lines or ["- 无展示区间信号。"]),
+        "", "## 背离预警生命周期", "",
+        f"- 状态截止日：{result.metadata['display_end_date']}",
+        "- 当前预警状态：" + " / ".join(
+            f"{status} {state_counts[status]}" for status in WARNING_STATUS_ORDER
+        ),
+        "- 展示区间事件：" + " / ".join(
+            f"{event} {event_counts[event]}" for event in WARNING_LIFECYCLE_ORDER
+        ),
+        "", "### 当前 ACTIVE 预警", "",
+        *(active_warning_lines or ["- 无。"]),
+        "", "### 展示区间生命周期事件", "",
+        *(lifecycle_lines or ["- 无。"]),
         "", "## RSI口径审计", "",
         f"- {result.metadata['rsi_algorithm']}；seed_mode={result.metadata['seed_mode']}。",
         f"- {result.metadata['rsi_difference_explanation']}",
@@ -114,6 +162,80 @@ def build_summary(result: AnalysisResult, config: RsiExitConfig) -> str:
         "", "## 参数", "", "```json", json.dumps(params, ensure_ascii=False, indent=2), "```",
         "", "## 警告", "", *(warning_lines or ["- 无。"]), "",
     ])
+
+
+def _warning_reporting_snapshot(
+    warning_events: pd.DataFrame,
+    *,
+    display_start_date: object,
+    display_end_date: object,
+) -> dict[str, object]:
+    """Return deterministic warning state and display-event snapshots."""
+
+    events = (
+        warning_events.copy(deep=True)
+        if not warning_events.empty
+        else pd.DataFrame(columns=WARNING_EVENT_COLUMNS)
+    )
+    state_counts = {status: 0 for status in WARNING_STATUS_ORDER}
+    event_counts = {event: 0 for event in WARNING_LIFECYCLE_ORDER}
+    if events.empty:
+        return {
+            "state_counts": state_counts,
+            "event_counts": event_counts,
+            "active": events.copy(),
+            "timeline": events.copy(),
+        }
+
+    display_start = pd.Timestamp(display_start_date)
+    display_end = pd.Timestamp(display_end_date)
+    events["_event_order"] = range(len(events))
+    events["_decision_timestamp"] = pd.to_datetime(events["decision_date"])
+    history = events.loc[
+        events["_decision_timestamp"] <= display_end
+    ].sort_values(
+        [
+            "_decision_timestamp",
+            "warning_id",
+            "_event_order",
+            "source_version",
+        ],
+        kind="mergesort",
+    )
+    latest = history.groupby("warning_id", sort=False).tail(1)
+    for status in WARNING_STATUS_ORDER:
+        state_counts[status] = int((latest["warning_status"] == status).sum())
+    active = latest.loc[latest["warning_status"] == "ACTIVE"].sort_values(
+        ["warning_id", "_decision_timestamp", "_event_order"],
+        kind="mergesort",
+    )
+
+    timeline = events.loc[
+        events["_decision_timestamp"].between(display_start, display_end)
+    ].sort_values(
+        [
+            "_decision_timestamp",
+            "warning_id",
+            "_event_order",
+            "source_version",
+        ],
+        kind="mergesort",
+    )
+    for lifecycle_event in WARNING_LIFECYCLE_ORDER:
+        event_counts[lifecycle_event] = int(
+            (timeline["lifecycle_event"] == lifecycle_event).sum()
+        )
+    internal_columns = ["_event_order", "_decision_timestamp"]
+    return {
+        "state_counts": state_counts,
+        "event_counts": event_counts,
+        "active": active.drop(columns=internal_columns).reset_index(drop=True),
+        "timeline": timeline.drop(columns=internal_columns).reset_index(drop=True),
+    }
+
+
+def _summary_value(value: object) -> str:
+    return "—" if pd.isna(value) or str(value).strip() == "" else str(value)
 
 
 def build_regression_comparison(

@@ -63,9 +63,12 @@ python -m rsi_exit.cli `
 - `peaks.csv`：每个不可变候选峰及其 canonical、结构资格、价格关系、双周期和展示标志；
 - `canonical_peaks.csv`：每个 canonical 的当前代表候选；
 - `signals.csv`：保留 forming/formal、new-high/near-high、可比区、last structural、动能锚、divergence chain、risk cycle 和生效日；
+- `warning_events.csv`：记录完整、append-only 的背离预警生命周期；当前不影响仓位或自动交易；
 - `state_log.csv`、`cycle_log.csv`：状态和周期重置审计；
 - `rsi_audit.csv`：原始/复权价格、因子、递推分子分母、预热标志和校验和；
-- `summary.md`、`regression_comparison.md`、`annotated_chart.png`。
+- `summary.md`：展示截至展示结束日的 warning 状态和展示区间事件时间线；
+- `annotated_chart.png`：在 RSI 子图轻量显示每个 warning 的 OPENED 和最新生命周期结果；
+- `regression_comparison.md`：记录旧输出与当前正式输出的回归对照。
 
 根输出目录另有 `peak_validation_summary.csv`。
 
