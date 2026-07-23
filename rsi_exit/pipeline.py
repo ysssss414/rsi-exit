@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 import numpy as np
@@ -15,6 +15,7 @@ from rsi_exit.models import BaseState, SignalType
 from rsi_exit.peak_detector import PeakDetector
 from rsi_exit.position_rules import divergence_position_rule, merge_position_caps
 from rsi_exit.state_machine import RsiExitStateMachine
+from rsi_exit.warning_events import build_warning_events, warning_events_frame
 
 
 @dataclass
@@ -30,6 +31,7 @@ class AnalysisResult:
     rsi_audit: pd.DataFrame
     warnings: list[str]
     metadata: dict[str, Any]
+    warning_events: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 SIGNAL_COLUMNS = [
@@ -235,6 +237,7 @@ def analyze_bars(
     decision_signal_action = "NO_DIVERGENCE_REDUCTION"
     current_divergence_count = 0
     signals: list[dict[str, Any]] = []
+    forming_warning_sources: list[dict[str, object]] = []
     daily_rows: list[dict[str, Any]] = []
     state_rows: list[dict[str, Any]] = []
     cycle_rows: list[dict[str, Any]] = []
@@ -288,7 +291,7 @@ def analyze_bars(
                 f"forming={forming.forming_peak_id}@v{forming.forming_version}; "
                 "audit only; position ineligible"
             )
-            signals.append({
+            forming_signal = {
                 "decision_date": _date_text(date),
                 "earliest_action_date": None,
                 "effective_date": None,
@@ -367,6 +370,48 @@ def analyze_bars(
                 "base_position_cap": transition.position_cap,
                 "final_position_cap": forming_final_cap,
                 "final_action": forming_action,
+            }
+            signals.append(forming_signal)
+            latest_confirmed = tracker.latest_confirmed_canonical
+            forming_warning_sources.append({
+                "signal_type": forming_signal["signal_type"],
+                "signal_status": forming_signal["signal_status"],
+                "price_relation": forming_signal["price_relation"],
+                "candidate_peak_id": forming_signal["candidate_peak_id"],
+                "canonical_version": forming_signal["canonical_version"],
+                "current_peak_date": forming_signal["current_peak_date"],
+                "decision_date": forming_signal["decision_date"],
+                "momentum_anchor_canonical_id": forming_signal[
+                    "momentum_anchor_canonical_id"
+                ],
+                "momentum_anchor_canonical_version": forming_signal[
+                    "momentum_anchor_canonical_version"
+                ],
+                "previous_canonical_peak_id": forming_signal[
+                    "previous_canonical_peak_id"
+                ],
+                "previous_canonical_version": forming_signal[
+                    "previous_canonical_version"
+                ],
+                "divergence_chain_id": forming_signal["divergence_chain_id"],
+                "risk_cycle_id": forming_signal["risk_cycle_id"],
+                "local_rsi_delta": forming_signal["local_rsi_delta"],
+                "anchor_rsi_delta": forming_signal["anchor_rsi_delta"],
+                "structural_eligible": forming_signal["structural_eligible"],
+                "position_eligible": forming_signal["position_eligible"],
+                "pending_action_type": forming_signal["pending_action_type"],
+                "is_warmup": forming_signal["is_warmup"],
+                "is_display_range": forming_signal["is_display_range"],
+                "latest_confirmed_canonical_id": (
+                    None
+                    if latest_confirmed is None
+                    else latest_confirmed.canonical_peak_id
+                ),
+                "latest_confirmed_canonical_version": (
+                    None
+                    if latest_confirmed is None
+                    else latest_confirmed.canonical_version
+                ),
             })
             day_signal_type, day_reason = SignalType.DIVERGENCE_FORMING.value, reason
 
@@ -686,6 +731,10 @@ def analyze_bars(
     daily["date"] = pd.to_datetime(daily["date"])
     state_log = pd.DataFrame(state_rows)
     signal_frame = pd.DataFrame(signals, columns=SIGNAL_COLUMNS)
+    warning_events = warning_events_frame(build_warning_events(
+        symbol=symbol,
+        sources=forming_warning_sources,
+    ))
     for frame, column in ((daily, "date"), (state_log, "date")):
         date_values = pd.to_datetime(frame[column])
         frame.drop(frame.index[~date_values.between(display_start, display_end)], inplace=True)
@@ -787,7 +836,7 @@ def analyze_bars(
     }
     return AnalysisResult(
         symbol, name, daily, peaks, canonical_peaks, signal_frame, state_log,
-        pd.DataFrame(cycle_rows), rsi_audit, warnings, metadata,
+        pd.DataFrame(cycle_rows), rsi_audit, warnings, metadata, warning_events,
     )
 
 

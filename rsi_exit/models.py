@@ -32,6 +32,71 @@ class SignalType(str, Enum):
     DIVERGENCE_FORMING = "DIVERGENCE_FORMING"
 
 
+class WarningType(str, Enum):
+    FORMING_DIVERGENCE_WARNING = "FORMING_DIVERGENCE_WARNING"
+
+
+class WarningLifecycleEvent(str, Enum):
+    OPENED = "OPENED"
+    REFRESHED = "REFRESHED"
+    ESCALATED = "ESCALATED"
+    CLEARED = "CLEARED"
+    INVALIDATED = "INVALIDATED"
+
+
+class WarningStatus(str, Enum):
+    ACTIVE = "ACTIVE"
+    ESCALATED = "ESCALATED"
+    CLEARED = "CLEARED"
+    INVALIDATED = "INVALIDATED"
+
+
+class WarningSourceKind(str, Enum):
+    FORMING_PEAK = "FORMING_PEAK"
+
+
+class WarningPositionEffect(str, Enum):
+    NONE = "NONE"
+
+
+@dataclass(frozen=True)
+class WarningEvent:
+    symbol: str
+    warning_event_id: str
+    warning_id: str
+    warning_type: WarningType
+    lifecycle_event: WarningLifecycleEvent
+    warning_status: WarningStatus
+    source_kind: WarningSourceKind
+    source_peak_id: str
+    source_version: int
+    source_canonical_peak_id: str | None
+    source_canonical_version: int | None
+    source_peak_date: str
+    observation_date: str
+    decision_date: str
+    available_date: str
+    momentum_anchor_id: str
+    momentum_anchor_version: int
+    last_structural_peak_id: str
+    last_structural_peak_version: int
+    latest_confirmed_canonical_id: str | None
+    latest_confirmed_canonical_version: int | None
+    divergence_chain_id: str
+    risk_cycle_id: str
+    price_relation: str
+    local_rsi_delta: float
+    anchor_rsi_delta: float
+    warning_reason: str
+    warning_evidence: str
+    end_reason: str | None
+    linked_formal_signal_ref: str | None
+    position_effect: WarningPositionEffect
+    recommended_position_cap: float | None
+    is_warmup: bool
+    is_display_range: bool
+
+
 @dataclass
 class Peak:
     """One immutable confirmed candidate.

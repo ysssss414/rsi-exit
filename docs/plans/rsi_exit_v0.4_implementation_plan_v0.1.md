@@ -23,11 +23,12 @@
 
 ### 预计修改文件
 
-- `rsi_exit/models.py`：新增 warning enum/dataclass；保留 `warnings: list[str]`，新增
-  `warning_events: pd.DataFrame`，不改原字段内容和语义；
+- `rsi_exit/models.py`：新增 warning enum/dataclass；
 - `rsi_exit/warning_events.py`（新增）：消费既有 forming fact、验证 source contract、建立
   含 `symbol` 的确定性身份并生成审计事件；不得重算背离条件；
-- `rsi_exit/pipeline.py`：以只读方式将既有 forming 结果传入 warning 纯函数；
+- `rsi_exit/pipeline.py`：保留 `AnalysisResult.warnings: list[str]` 并新增
+  `AnalysisResult.warning_events: pd.DataFrame`；以只读方式将既有 forming 结果传入
+  warning 纯函数；
 - `rsi_exit/reporting.py`：新增独立 `warning_events.csv`，不混入正式 `signals.csv`；
 - `tests/test_v04_warning_events.py`（新增）：事件条件、身份、日期和隔离测试。
 
