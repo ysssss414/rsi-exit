@@ -1,17 +1,18 @@
-# RSI卖点信号识别器 v0.3.0
+# RSI卖点信号识别器 v0.4.0
 
 面向 A 股日线趋势股的 RSI 卖点与持仓去偏系统。它生成可审计的风险约束，不读取成本、盈亏或持仓时间，不自动下单。
 
-v0.3.0 在 v0.2.1 基线上重构顶部背离：引入 structural peak、前峰真实交易日收盘可比区、新高/近高双 RSI 背离、独立 divergence chain 和只审计不入仓位的 forming 事件。AmazingData 仍是唯一在线行情源。
+v0.4.0 在 v0.3.0 正式背离边界上冻结 append-only warning 生命周期、截止日状态推导与报告。warning lifecycle 当前及 v0.4.0 冻结版本均不影响仓位；`ESCALATED` 的仓位约束来自其链接的正式背离，而不是 warning event。AmazingData 仍是唯一在线行情源。
 
 ## 当前冻结版本
 
-- Current frozen version: v0.3.0
-- Semantic base commit: `2010817939f5cf3a039e2a96936513487fb5114f`
-- 冻结规格：[v0.3 顶部背离规格](docs/specs/rsi_exit_v0.3_top_divergence_spec_v0.2.md)
-- 冻结清单：[v0.3.0 freeze manifest](docs/releases/rsi_exit_v0.3.0_freeze_manifest.md)
+- Current frozen version: v0.4.0
+- Semantic base commit: `06e1468c0f76be13dbb3966707babc7a1d4dd281`
+- 冻结规格：[v0.4 warning 生命周期规格](docs/specs/rsi_exit_v0.4_warning_lifecycle_spec.md)
+- 冻结清单：[v0.4.0 freeze manifest](docs/releases/rsi_exit_v0.4.0_freeze_manifest.md)
 - 私有输入：`300308.SZ_v0.2.1_frozen_baseline.zip`，SHA-256 `EA026086B71A0A0CD537ADA177D141DC44DD634B4882C53F341A8605EE906FA5`
-- 冻结输出：`300308.SZ_v0.3.0_frozen_baseline.zip`，SHA-256 `932D0220AAB4A3BDC6BB0EA3A77630A994702E821E1FF72C7A4F3E25B6D1BF52`
+- 冻结输出：`300308.SZ_v0.4.0_frozen_baseline.zip`，SHA-256 `623EE4EB5892AF4CCDB14DEE0CCD7CBF3CFB9AF12D115D3C6E9D61F1884B4C86`
+- 历史冻结：[v0.3.0 freeze manifest](docs/releases/rsi_exit_v0.3.0_freeze_manifest.md)，baseline SHA-256 `932D0220AAB4A3BDC6BB0EA3A77630A994702E821E1FF72C7A4F3E25B6D1BF52`
 
 发布验收命令：`python -m rsi_exit.release_check --frozen-baseline <输入ZIP路径>`。
 
@@ -126,4 +127,4 @@ results, summary = run_batch(
 )
 ```
 
-冻结口径见 [v0.3 顶部背离规格](docs/specs/rsi_exit_v0.3_top_divergence_spec_v0.2.md)。[v0.2 技术说明](docs/rsi_exit_v02.md) 与 [v0.1 技术说明](docs/rsi_exit_v01.md) 保留为历史基线。
+冻结口径见 [v0.4 warning 生命周期规格](docs/specs/rsi_exit_v0.4_warning_lifecycle_spec.md)。[v0.3 顶部背离规格](docs/specs/rsi_exit_v0.3_top_divergence_spec_v0.2.md)、[v0.2 技术说明](docs/rsi_exit_v02.md) 与 [v0.1 技术说明](docs/rsi_exit_v01.md) 保留为历史基线。

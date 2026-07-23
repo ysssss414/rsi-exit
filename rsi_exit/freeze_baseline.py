@@ -12,7 +12,6 @@ import zipfile
 
 import pandas as pd
 
-from rsi_exit import __version__
 from rsi_exit.config import RsiExitConfig, load_config
 from rsi_exit.models import SignalType
 from rsi_exit.pipeline import AnalysisResult, analyze_bars
@@ -164,7 +163,7 @@ def freeze_baseline(source_baseline: str | Path, output: str | Path) -> dict[str
 
     release_summary = validate_frozen_baseline(source_path)
     bars = load_frozen_bars(source_path)
-    config = load_config()
+    config = load_config(CONFIG_PATH)
     result = analyze_bars(
         bars,
         symbol=SYMBOL,
@@ -222,12 +221,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _validate_identity(result: AnalysisResult, config: RsiExitConfig) -> None:
-    versions = {
-        "rsi_exit.__version__": __version__,
-        CONFIG_PATH: config.values.get("version"),
-    }
-    if set(versions.values()) != {FREEZE_VERSION}:
-        raise FreezeBaselineError(f"v0.3.0 version identity mismatch: {versions}")
+    config_version = config.values.get("version")
+    if config_version != FREEZE_VERSION:
+        raise FreezeBaselineError(
+            f"v0.3.0 config version mismatch: {config_version!r}"
+        )
     if result.symbol != SYMBOL:
         raise FreezeBaselineError(
             f"frozen result symbol mismatch: expected {SYMBOL}, got {result.symbol}"
