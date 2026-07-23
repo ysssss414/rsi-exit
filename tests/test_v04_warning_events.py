@@ -532,7 +532,7 @@ def test_pipeline_warning_layer_is_fully_isolated(monkeypatch) -> None:
     assert normal.metadata == isolated.metadata
 
 
-def test_reporting_writes_separate_warning_csv_without_changing_summary(
+def test_reporting_writes_warning_csv_and_lifecycle_summary(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -572,9 +572,13 @@ def test_reporting_writes_separate_warning_csv_without_changing_summary(
     )
     assert empty_written.empty
     assert empty_written.columns.tolist() == WARNING_EVENT_COLUMNS
-    assert build_summary(empty_result, config) == with_events_summary
+    empty_summary = build_summary(empty_result, config)
+    assert empty_summary != with_events_summary
+    assert "## 背离预警生命周期" in empty_summary
     assert "## 警告" in with_events_summary
-    assert result.warning_events.iloc[0]["warning_id"] not in with_events_summary
+    warning_id = result.warning_events.iloc[0]["warning_id"]
+    assert warning_id in with_events_summary
+    assert warning_id not in empty_summary
 
 
 def test_v03_frozen_archive_and_release_contract_exclude_warning_events() -> None:
