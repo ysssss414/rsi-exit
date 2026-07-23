@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import importlib.util
 from pathlib import Path
 
 import pandas as pd
@@ -17,7 +18,6 @@ from rsi_exit.models import SignalType
 from rsi_exit.pipeline import analyze_bars
 from rsi_exit.release_check import load_frozen_bars
 from rsi_exit.warning_events import WARNING_EVENT_COLUMNS
-from scripts import run_v04_phase41_actionability as actionability_script
 
 
 PRIVATE_REGRESSION_BASELINE = (
@@ -30,6 +30,17 @@ PHASE4_DOCS = (
     Path(__file__).parents[1] / "docs" / "validation" / "v04_phase4"
 )
 FORMAL_TYPE = SignalType.NEW_HIGH_BEARISH_DIVERGENCE.value
+ACTIONABILITY_SCRIPT = (
+    Path(__file__).parents[1] / "scripts" / "run_v04_phase41_actionability.py"
+)
+_SCRIPT_SPEC = importlib.util.spec_from_file_location(
+    "run_v04_phase41_actionability",
+    ACTIONABILITY_SCRIPT,
+)
+if _SCRIPT_SPEC is None or _SCRIPT_SPEC.loader is None:
+    raise RuntimeError(f"cannot load actionability script: {ACTIONABILITY_SCRIPT}")
+actionability_script = importlib.util.module_from_spec(_SCRIPT_SPEC)
+_SCRIPT_SPEC.loader.exec_module(actionability_script)
 
 
 def _daily(
