@@ -35,6 +35,23 @@ python -m pytest -m frozen_baseline_required
 
 AmazingData 凭据仍由既有 `D:/ej/材料/codex/yh` 项目的环境变量或 `.env.local` 读取；本仓库不保存凭据。
 
+## v0.4 Phase 4 多样本描述性验证
+
+固定样本见 `validation/v04_phase4_samples.csv`。验证脚本复用单个 AmazingData
+session 和默认配置，生成正常单股输出以及 warning 生命周期、cohort 和描述性价格路径汇总：
+
+```powershell
+python scripts/run_v04_phase4_validation.py `
+  --manifest validation/v04_phase4_samples.csv `
+  --display-start 2024-01-01 `
+  --display-end 2026-07-20 `
+  --adjust forward `
+  --output-dir outputs/validation/v04_phase4
+```
+
+如需绕过既有行情缓存可增加 `--force-refresh`。任一样本失败时仍会保留错误行并处理
+其他样本，脚本最终返回非零；这些结果只用于描述性验证，不是策略收益或仓位建议。
+
 ## 中际旭创回归
 
 ```powershell
