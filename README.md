@@ -52,6 +52,20 @@ python scripts/run_v04_phase4_validation.py `
 如需绕过既有行情缓存可增加 `--force-refresh`。任一样本失败时仍会保留错误行并处理
 其他样本，脚本最终返回非零；这些结果只用于描述性验证，不是策略收益或仓位建议。
 
+## v0.4 Phase 4.1 warning 事件时点可操作性验证
+
+Phase 4.1 只读取 Phase 4 已生成的 12 个样本输出，不连接 AmazingData。它以事件后下一
+真实交易日开盘作为最早执行代理，并核对正式背离与 ESCALATED warning 的逐条链接：
+
+```powershell
+python scripts/run_v04_phase41_actionability.py `
+  --phase4-output outputs/validation/v04_phase4 `
+  --output-dir outputs/validation/v04_phase41_actionability
+```
+
+任一样本文件、schema、checksum 或 linkage 核对失败时脚本返回非零。输出仅用于描述性
+验证，不是策略收益、成交承诺或仓位建议。
+
 ## 中际旭创回归
 
 ```powershell
