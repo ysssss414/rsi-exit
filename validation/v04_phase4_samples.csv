@@ -1,0 +1,13 @@
+symbol,sample_group,rationale
+300308.SZ,AI_OPTICAL,existing frozen reference
+300502.SZ,AI_OPTICAL,strong optical trend comparison
+300394.SZ,AI_OPTICAL,optical component trend comparison
+002463.SZ,PCB,high-capacity PCB trend
+600183.SH,PCB,PCB material trend
+688012.SH,SEMICONDUCTOR_EQUIPMENT,semiconductor equipment large cap
+688072.SH,SEMICONDUCTOR_EQUIPMENT,semiconductor equipment high volatility
+300750.SZ,GROWTH_CYCLICAL,large-cap growth and cycle
+300274.SZ,GROWTH_CYCLICAL,high-volatility growth trend
+601127.SH,GROWTH_CYCLICAL,high-volatility automotive trend
+600519.SH,LARGE_CAP_CONTROL,lower-volatility large-cap control
+601318.SH,LARGE_CAP_CONTROL,non-technology large-cap control
